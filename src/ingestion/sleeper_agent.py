@@ -106,6 +106,16 @@ def save_raw_data(players: list) -> None:
     
     print(f"Saved {len(players)} players to {file_path}")
 
+def load_existing_players() -> list:
+    """Loads previously saved Sleeper player data."""
+    RAW_DATA_PATH = Path(__file__).parent.parent.parent / "data" / "raw"
+    file_path = RAW_DATA_PATH / "sleeper_players.json"
+    if not file_path.exists():
+        return []
+    with open(file_path) as f:
+        return json.load(f)
+
+
 if __name__ == "__main__":
     print("Fetching players from Sleeper API...")
     raw_players = fetch_players()
