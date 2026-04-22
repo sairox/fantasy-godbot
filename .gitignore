@@ -5,10 +5,19 @@ build/
 dist/
 wheels/
 *.egg-info
-.env
-.env.local
-.env.*.local
-data/
 
 # Virtual environments
 .venv
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Generated data — do not commit
+data/raw/*.json
+data/processed/
+data/chroma/
+
+# Keep source data files
+!data/raw/reception_perception/
