@@ -139,60 +139,51 @@ def _player_to_text(player: dict) -> str:
         "",
     ]
 
-    # ── Position-specific NGS advanced stats ─────────────────────────────────
-    if pos == "RB":
+    # ── NGS advanced stats: show each section if any data exists for that stat type.
+    # No position gating — CMC has receiving stats, Lamar has rushing stats, etc.
+
+    if player.get("rush_attempts_2025") or player.get("rush_attempts_2024"):
         lines += [
-            "ADVANCED RUSHING STATS (NGS):",
+            "RUSHING STATS (NGS):",
             f"2025: {player.get('rush_attempts_2025', 'N/A')} att, "
             f"{player.get('rush_yards_2025', 'N/A')} yds, "
             f"YPC {_fmt(player.get('ypc_2025'), 2)}, "
-            f"RYOE {_fmt(player.get('ryoe_2025'), 1)} ({_fmt(player.get('ryoe_per_att_2025'), 3)}/att), "
             f"Rush TDs {player.get('rush_tds_2025', 'N/A')}, "
+            f"RYOE {_fmt(player.get('ryoe_2025'), 1)} ({_fmt(player.get('ryoe_per_att_2025'), 3)}/att), "
             f"Efficiency {_fmt(player.get('rush_efficiency_2025'), 2)}, "
             f"% vs 8+ defenders {_fmt(player.get('pct_vs_8_defenders_2025'), 1)}",
             f"2024: {player.get('rush_attempts_2024', 'N/A')} att, "
             f"{player.get('rush_yards_2024', 'N/A')} yds, "
             f"YPC {_fmt(player.get('ypc_2024'), 2)}, "
-            f"RYOE {_fmt(player.get('ryoe_2024'), 1)} ({_fmt(player.get('ryoe_per_att_2024'), 3)}/att), "
-            f"Rush TDs {player.get('rush_tds_2024', 'N/A')}",
+            f"Rush TDs {player.get('rush_tds_2024', 'N/A')}, "
+            f"RYOE {_fmt(player.get('ryoe_2024'), 1)} ({_fmt(player.get('ryoe_per_att_2024'), 3)}/att)",
             "",
         ]
-        # RBs also have receiving component
-        if player.get("targets_2025") or player.get("targets_2024"):
-            lines += [
-                "RECEIVING STATS (NGS):",
-                f"2025: {player.get('targets_2025', 'N/A')} tgt, "
-                f"{player.get('receptions_2025', 'N/A')} rec, "
-                f"{player.get('rec_yards_2025', 'N/A')} yds, "
-                f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
-                f"Avg separation {_fmt(player.get('avg_separation_2025'), 2)} yds",
-                "",
-            ]
 
-    elif pos in ("WR", "TE"):
+    if player.get("targets_2025") or player.get("targets_2024"):
         lines += [
-            "ADVANCED RECEIVING STATS (NGS):",
+            "RECEIVING STATS (NGS):",
             f"2025: {player.get('targets_2025', 'N/A')} tgt, "
             f"{player.get('receptions_2025', 'N/A')} rec, "
             f"{player.get('rec_yards_2025', 'N/A')} yds, "
-            f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
             f"Rec TDs {player.get('rec_tds_2025', 'N/A')}, "
+            f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
             f"Avg separation {_fmt(player.get('avg_separation_2025'), 2)} yds, "
             f"Air yards share {_fmt(player.get('air_yards_share_2025'), 1)}%, "
             f"YAC above expected {_fmt(player.get('yac_above_expected_2025'), 2)}",
             f"2024: {player.get('targets_2024', 'N/A')} tgt, "
             f"{player.get('receptions_2024', 'N/A')} rec, "
             f"{player.get('rec_yards_2024', 'N/A')} yds, "
-            f"Catch% {_fmt(player.get('catch_pct_2024'), 1)}, "
             f"Rec TDs {player.get('rec_tds_2024', 'N/A')}, "
+            f"Catch% {_fmt(player.get('catch_pct_2024'), 1)}, "
             f"Avg separation {_fmt(player.get('avg_separation_2024'), 2)} yds, "
             f"Air yards share {_fmt(player.get('air_yards_share_2024'), 1)}%",
             "",
         ]
 
-    elif pos == "QB":
+    if player.get("pass_attempts_2025") or player.get("pass_attempts_2024"):
         lines += [
-            "ADVANCED PASSING STATS (NGS):",
+            "PASSING STATS (NGS):",
             f"2025: {player.get('pass_attempts_2025', 'N/A')} att, "
             f"{player.get('pass_yards_2025', 'N/A')} yds, "
             f"Pass TDs {player.get('pass_tds_2025', 'N/A')}, "
@@ -208,7 +199,8 @@ def _player_to_text(player: dict) -> str:
             f"INTs {player.get('interceptions_2024', 'N/A')}, "
             f"Comp% {_fmt(player.get('completion_pct_2024'), 1)} "
             f"(CPOE {_fmt(player.get('cpoe_2024'), 2)}), "
-            f"Passer rating {_fmt(player.get('passer_rating_2024'), 1)}",
+            f"Passer rating {_fmt(player.get('passer_rating_2024'), 1)}, "
+            f"Aggressiveness {_fmt(player.get('aggressiveness_2024'), 1)}",
             "",
         ]
 

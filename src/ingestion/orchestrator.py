@@ -214,7 +214,7 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "games_played_2024": games_played_2024,
         "games_missed_2024": games_missed_2024,
 
-        # NGS rushing stats (authoritative, from nfl-data-py)
+        # NGS rushing stats — all positions (RBs, QBs, gadget WRs)
         "rush_attempts_2025":       ngs.get("rush_attempts_2025"),
         "rush_yards_2025":          ngs.get("rush_yards_2025"),
         "ypc_2025":                 ngs.get("ypc_2025"),
@@ -226,9 +226,13 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "rush_attempts_2024":       ngs.get("rush_attempts_2024"),
         "rush_yards_2024":          ngs.get("rush_yards_2024"),
         "ypc_2024":                 ngs.get("ypc_2024"),
+        "rush_tds_2024":            ngs.get("rush_tds_2024"),
         "ryoe_2024":                ngs.get("ryoe_2024"),
+        "ryoe_per_att_2024":        ngs.get("ryoe_per_att_2024"),
+        "rush_efficiency_2024":     ngs.get("rush_efficiency_2024"),
+        "pct_vs_8_defenders_2024":  ngs.get("pct_vs_8_defenders_2024"),
 
-        # NGS receiving stats
+        # NGS receiving stats — all positions (RBs, WRs, TEs, pass-catching QBs)
         "targets_2025":             ngs.get("targets_2025"),
         "receptions_2025":          ngs.get("receptions_2025"),
         "rec_yards_2025":           ngs.get("rec_yards_2025"),
@@ -237,11 +241,18 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "avg_separation_2025":      ngs.get("avg_separation_2025"),
         "air_yards_share_2025":     ngs.get("air_yards_share_2025"),
         "yac_above_expected_2025":  ngs.get("yac_above_expected_2025"),
+        "avg_yac_2025":             ngs.get("avg_yac_2025"),
         "targets_2024":             ngs.get("targets_2024"),
+        "receptions_2024":          ngs.get("receptions_2024"),
         "rec_yards_2024":           ngs.get("rec_yards_2024"),
+        "rec_tds_2024":             ngs.get("rec_tds_2024"),
+        "catch_pct_2024":           ngs.get("catch_pct_2024"),
         "avg_separation_2024":      ngs.get("avg_separation_2024"),
+        "air_yards_share_2024":     ngs.get("air_yards_share_2024"),
+        "yac_above_expected_2024":  ngs.get("yac_above_expected_2024"),
+        "avg_yac_2024":             ngs.get("avg_yac_2024"),
 
-        # NGS passing stats
+        # NGS passing stats — QBs (and any dual-threat players in NGS passing data)
         "pass_attempts_2025":   ngs.get("pass_attempts_2025"),
         "pass_yards_2025":      ngs.get("pass_yards_2025"),
         "pass_tds_2025":        ngs.get("pass_tds_2025"),
@@ -253,7 +264,13 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "passer_rating_2025":   ngs.get("passer_rating_2025"),
         "pass_attempts_2024":   ngs.get("pass_attempts_2024"),
         "pass_yards_2024":      ngs.get("pass_yards_2024"),
+        "pass_tds_2024":        ngs.get("pass_tds_2024"),
+        "interceptions_2024":   ngs.get("interceptions_2024"),
+        "completion_pct_2024":  ngs.get("completion_pct_2024"),
         "cpoe_2024":            ngs.get("cpoe_2024"),
+        "aggressiveness_2024":  ngs.get("aggressiveness_2024"),
+        "time_to_throw_2024":   ngs.get("time_to_throw_2024"),
+        "passer_rating_2024":   ngs.get("passer_rating_2024"),
 
         # injury detail
         "injury_type_2025":    ngs.get("injury_type_2025"),
