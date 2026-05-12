@@ -147,9 +147,9 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         else fp_games_played_2024
     )
 
-    # --- ADP / ECR ---
-    adp = st.get("adp_2025")
-    ecr = st.get("ecr_2025")
+    # --- ADP / ECR --- (fp_stats now empty; adp/ecr come from fp_rankings)
+    adp = st.get("adp_2025") or rk.get("adp_2025")
+    ecr = st.get("ecr_2025") or rk.get("ecr_2025")
     ecr_vs_adp = round(ecr - adp, 2) if ecr and adp else None
 
     finish_2025 = st.get("finish_rank_half_2025")
@@ -204,9 +204,9 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "adp_2025": adp,
         "ecr_2025": ecr,
         "ecr_vs_adp_2025": ecr_vs_adp,
-        "adp_best_2025": st.get("adp_best_2025"),
-        "adp_worst_2025": st.get("adp_worst_2025"),
-        "adp_std_dev_2025": st.get("adp_std_dev_2025"),
+        "adp_best_2025": st.get("adp_best_2025") or rk.get("adp_best_2025"),
+        "adp_worst_2025": st.get("adp_worst_2025") or rk.get("adp_worst_2025"),
+        "adp_std_dev_2025": st.get("adp_std_dev_2025") or rk.get("adp_std_dev_2025"),
         "value_vs_adp_2025": value_vs_adp,
 
         # 2025 performance (FantasyPros where available, nflverse seasonal as fallback)

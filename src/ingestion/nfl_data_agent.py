@@ -1,42 +1,20 @@
 import json
 import hashlib
 import logging
+from datetime import date
 from pathlib import Path
 
-import nfl_data_py as nfl
+import nflreadpy as nflr
+import nfl_data_py as nfl  # retained only for fetch_games_missed (injury data)
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 RAW_DATA_PATH = Path(__file__).parent.parent.parent / "data" / "raw"
 
-RUSH_COLS = [
-    "player_gsis_id", "player_display_name", "player_position", "team_abbr",
-    "rush_attempts", "rush_yards", "avg_rush_yards", "rush_touchdowns",
-    "rush_yards_over_expected", "rush_yards_over_expected_per_att",
-    "efficiency", "percent_attempts_gte_eight_defenders",
-    "expected_rush_yards",
-]
-
-RECV_COLS = [
-    "player_gsis_id", "player_display_name", "player_position", "team_abbr",
-    "targets", "receptions", "catch_percentage", "yards", "rec_touchdowns",
-    "avg_separation", "avg_cushion", "avg_intended_air_yards",
-    "percent_share_of_intended_air_yards",
-    "avg_yac", "avg_yac_above_expectation",
-]
-
-PASS_COLS = [
-    "player_gsis_id", "player_display_name", "player_position", "team_abbr",
-    "attempts", "completions", "completion_percentage", "pass_yards",
-    "pass_touchdowns", "interceptions", "passer_rating",
-    "expected_completion_percentage", "completion_percentage_above_expectation",
-    "aggressiveness", "avg_time_to_throw", "avg_intended_air_yards",
-]
-
 
 def _safe_val(val):
-    """Converts numpy types to plain Python scalars; None for NaN."""
+    """Converts numpy/polars types to plain Python scalars; None for NaN."""
     if val is None:
         return None
     try:
@@ -50,10 +28,6 @@ def _safe_val(val):
     return val
 
 
-def _row_to_dict(row: pd.Series, cols: list[str]) -> dict:
-    return {c: _safe_val(row[c]) for c in cols if c in row.index}
-
-
 def _norm_name(name: str) -> str:
     """Lowercases and strips common name suffixes for matching."""
     n = name.lower().strip()
@@ -64,14 +38,117 @@ def _norm_name(name: str) -> str:
     return n.strip()
 
 
-def _fetch_ngs(stat_type: str, years: list[int]) -> pd.DataFrame:
-    """Fetches NGS data for given stat type and filters to full-season rows (week=0)."""
+def _compute_age(birth_date_str) -> int | None:
+    """Computes age in years from a birth date string (YYYY-MM-DD)."""
+    if not birth_date_str:
+        return None
     try:
-        df = nfl.import_ngs_data(stat_type, years)
-        return df[df["week"] == 0].copy()
+        bd = date.fromisoformat(str(birth_date_str)[:10])
+        today = date.today()
+        return today.year - bd.year - ((today.month, today.day) < (bd.month, bd.day))
+    except Exception:
+        return None
+
+
+def fetch_rosters(years: list[int] = [2024, 2025]) -> dict[str, dict]:
+    """
+    Fetches weekly roster data from nflreadpy and collapses to the most
+    recent entry per player.  Provides position, team, age, depth chart,
+    status, and cross-platform IDs (Sleeper, ESPN, Yahoo, etc.).
+    """
+    frames = []
+    for yr in sorted(years):
+        try:
+            frames.append(nflr.load_rosters_weekly([yr]).to_pandas())
+        except Exception as e:
+            logger.warning("Roster data unavailable for %s: %s", yr, e)
+    if not frames:
+        return {}
+
+    df = pd.concat(frames, ignore_index=True)
+    # Keep the latest week per player so newer team/status wins
+    df = df.sort_values(["season", "week"], ascending=True)
+    df = df.dropna(subset=["gsis_id"])
+    df = df.drop_duplicates(subset=["gsis_id"], keep="last")
+
+    result: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        gsis_id = str(row.get("gsis_id", "")).strip()
+        if not gsis_id:
+            continue
+        name = str(row.get("full_name", "")).strip()
+        if not name:
+            continue
+        result[gsis_id] = {
+            "gsis_id":           gsis_id,
+            "player_display_name": name,
+            "position":          _safe_val(row.get("position")),
+            "team":              _safe_val(row.get("team")),
+            "age":               _compute_age(row.get("birth_date")),
+            "years_exp":         _safe_val(row.get("years_exp")),
+            "depth_chart_order": _safe_val(row.get("depth_chart_position")),
+            "status":            _safe_val(row.get("status")),
+            "sleeper_id":        _safe_val(row.get("sleeper_id")),
+            "espn_id":           _safe_val(row.get("espn_id")),
+            "yahoo_id":          _safe_val(row.get("yahoo_id")),
+        }
+
+    logger.info("Fetched rosters for %d players (%s)", len(result), years)
+    return result
+
+
+def fetch_seasonal_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
+    """
+    Fetches regular-season totals from nflreadpy for all positions.
+    Covers every position (including RBs that NGS receiving excludes),
+    fantasy points in all formats, target_share and WOPR on the correct
+    0-1 decimal scale, and games played.
+    """
+    try:
+        df = nflr.load_player_stats(years, summary_level="reg").to_pandas()
     except Exception as e:
-        logger.error(f"Failed to fetch NGS {stat_type} for {years}: {e}")
-        return pd.DataFrame()
+        logger.error("load_player_stats failed: %s", e)
+        return {}
+
+    result: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        gsis_id = str(row.get("player_id", "")).strip()
+        if not gsis_id:
+            continue
+        season = int(row["season"])
+        suffix = f"_{season}"
+
+        if gsis_id not in result:
+            result[gsis_id] = {
+                "gsis_id": gsis_id,
+                "player_display_name": str(row.get("player_display_name", "")),
+            }
+
+        fp_std  = _safe_val(row.get("fantasy_points"))
+        fp_ppr  = _safe_val(row.get("fantasy_points_ppr"))
+        fp_half = round((fp_std + fp_ppr) / 2, 1) if fp_std is not None and fp_ppr is not None else None
+
+        tgt_sh = _safe_val(row.get("target_share"))   # already 0-1 decimal
+        wopr   = _safe_val(row.get("wopr"))            # already 0-1 decimal
+
+        result[gsis_id].update({
+            f"rush_attempts{suffix}":           _safe_val(row.get("carries")),
+            f"rush_yards{suffix}":              _safe_val(row.get("rushing_yards")),
+            f"rush_tds{suffix}":                _safe_val(row.get("rushing_tds")),
+            f"targets{suffix}":                 _safe_val(row.get("targets")),
+            f"receptions{suffix}":              _safe_val(row.get("receptions")),
+            f"rec_yards{suffix}":               _safe_val(row.get("receiving_yards")),
+            f"rec_tds{suffix}":                 _safe_val(row.get("receiving_tds")),
+            f"fantasy_points_std{suffix}":      fp_std,
+            f"fantasy_points_ppr{suffix}":      fp_ppr,
+            f"fantasy_points_half_ppr{suffix}": fp_half,
+            f"games_played{suffix}":            _safe_val(row.get("games")),
+            f"target_share{suffix}":            round(tgt_sh * 100, 1) if tgt_sh is not None else None,
+            f"wopr{suffix}":                    round(float(wopr), 3) if wopr is not None else None,
+        })
+
+    logger.info("Fetched seasonal stats for %d players (%s)", len(result), years)
+    return result
 
 
 def fetch_rushing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
@@ -79,18 +156,21 @@ def fetch_rushing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     Returns NGS rushing stats keyed by gsis_id.
     Includes YPC, rush yards over expected, efficiency, % vs stacked box.
     """
-    df = _fetch_ngs("rushing", years)
-    if df.empty:
+    try:
+        df = nflr.load_nextgen_stats(years, "rushing").to_pandas()
+    except Exception as e:
+        logger.error("load_nextgen_stats rushing failed: %s", e)
         return {}
+
+    df = df[df["week"] == 0].copy()  # week=0 = full-season aggregate
 
     result: dict[str, dict] = {}
     for _, row in df.iterrows():
-        gsis_id = str(row.get("player_gsis_id", ""))
+        gsis_id = str(row.get("player_gsis_id", "")).strip()
         if not gsis_id:
             continue
         season = int(row["season"])
         suffix = f"_{season}"
-        data = _row_to_dict(row, RUSH_COLS)
 
         if gsis_id not in result:
             result[gsis_id] = {
@@ -98,38 +178,48 @@ def fetch_rushing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
                 "player_display_name": str(row.get("player_display_name", "")),
             }
 
+        avg_rush = _safe_val(row.get("avg_rush_yards"))
+        ryoe     = _safe_val(row.get("rush_yards_over_expected"))
+        ryoe_att = _safe_val(row.get("rush_yards_over_expected_per_att"))
+        eff      = _safe_val(row.get("efficiency"))
+        pct8     = _safe_val(row.get("percent_attempts_gte_eight_defenders"))
+
         result[gsis_id].update({
-            f"rush_attempts{suffix}":          data.get("rush_attempts"),
-            f"rush_yards{suffix}":             data.get("rush_yards"),
-            f"ypc{suffix}":                    round(data["avg_rush_yards"], 3) if data.get("avg_rush_yards") else None,
-            f"rush_tds{suffix}":               data.get("rush_touchdowns"),
-            f"ryoe{suffix}":                   round(data["rush_yards_over_expected"], 1) if data.get("rush_yards_over_expected") else None,
-            f"ryoe_per_att{suffix}":           round(data["rush_yards_over_expected_per_att"], 3) if data.get("rush_yards_over_expected_per_att") else None,
-            f"rush_efficiency{suffix}":        round(data["efficiency"], 2) if data.get("efficiency") else None,
-            f"pct_vs_8_defenders{suffix}":     round(data["percent_attempts_gte_eight_defenders"], 1) if data.get("percent_attempts_gte_eight_defenders") else None,
+            f"rush_attempts{suffix}":       _safe_val(row.get("rush_attempts")),
+            f"rush_yards{suffix}":          _safe_val(row.get("rush_yards")),
+            f"ypc{suffix}":                 round(avg_rush, 3) if avg_rush is not None else None,
+            f"rush_tds{suffix}":            _safe_val(row.get("rush_touchdowns")),
+            f"ryoe{suffix}":                round(ryoe, 1) if ryoe is not None else None,
+            f"ryoe_per_att{suffix}":        round(ryoe_att, 3) if ryoe_att is not None else None,
+            f"rush_efficiency{suffix}":     round(eff, 2) if eff is not None else None,
+            f"pct_vs_8_defenders{suffix}":  round(pct8, 1) if pct8 is not None else None,
         })
 
-    logger.info(f"Fetched NGS rushing stats for {len(result)} players ({years})")
+    logger.info("Fetched NGS rushing stats for %d players (%s)", len(result), years)
     return result
 
 
 def fetch_receiving_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     """
     Returns NGS receiving stats keyed by gsis_id.
+    Note: NGS receiving covers WR/TE only — RB receiving comes from fetch_seasonal_stats.
     Includes separation, air yards share, YAC above expected.
     """
-    df = _fetch_ngs("receiving", years)
-    if df.empty:
+    try:
+        df = nflr.load_nextgen_stats(years, "receiving").to_pandas()
+    except Exception as e:
+        logger.error("load_nextgen_stats receiving failed: %s", e)
         return {}
+
+    df = df[df["week"] == 0].copy()
 
     result: dict[str, dict] = {}
     for _, row in df.iterrows():
-        gsis_id = str(row.get("player_gsis_id", ""))
+        gsis_id = str(row.get("player_gsis_id", "")).strip()
         if not gsis_id:
             continue
         season = int(row["season"])
         suffix = f"_{season}"
-        data = _row_to_dict(row, RECV_COLS)
 
         if gsis_id not in result:
             result[gsis_id] = {
@@ -137,39 +227,48 @@ def fetch_receiving_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
                 "player_display_name": str(row.get("player_display_name", "")),
             }
 
+        catch_pct  = _safe_val(row.get("catch_percentage"))
+        sep        = _safe_val(row.get("avg_separation"))
+        air_sh     = _safe_val(row.get("percent_share_of_intended_air_yards"))
+        yac_above  = _safe_val(row.get("avg_yac_above_expectation"))
+        avg_yac    = _safe_val(row.get("avg_yac"))
+
         result[gsis_id].update({
-            f"targets{suffix}":             data.get("targets"),
-            f"receptions{suffix}":          data.get("receptions"),
-            f"rec_yards{suffix}":           data.get("yards"),
-            f"rec_tds{suffix}":             data.get("rec_touchdowns"),
-            f"catch_pct{suffix}":           round(data["catch_percentage"], 1) if data.get("catch_percentage") else None,
-            f"avg_separation{suffix}":      round(data["avg_separation"], 2) if data.get("avg_separation") else None,
-            f"air_yards_share{suffix}":     round(data["percent_share_of_intended_air_yards"], 1) if data.get("percent_share_of_intended_air_yards") else None,
-            f"yac_above_expected{suffix}":  round(data["avg_yac_above_expectation"], 2) if data.get("avg_yac_above_expectation") else None,
-            f"avg_yac{suffix}":             round(data["avg_yac"], 2) if data.get("avg_yac") else None,
+            f"targets{suffix}":             _safe_val(row.get("targets")),
+            f"receptions{suffix}":          _safe_val(row.get("receptions")),
+            f"rec_yards{suffix}":           _safe_val(row.get("yards")),
+            f"rec_tds{suffix}":             _safe_val(row.get("rec_touchdowns")),
+            f"catch_pct{suffix}":           round(catch_pct, 1) if catch_pct is not None else None,
+            f"avg_separation{suffix}":      round(sep, 2) if sep is not None else None,
+            f"air_yards_share{suffix}":     round(air_sh, 1) if air_sh is not None else None,
+            f"yac_above_expected{suffix}":  round(yac_above, 2) if yac_above is not None else None,
+            f"avg_yac{suffix}":             round(avg_yac, 2) if avg_yac is not None else None,
         })
 
-    logger.info(f"Fetched NGS receiving stats for {len(result)} players ({years})")
+    logger.info("Fetched NGS receiving stats for %d players (%s)", len(result), years)
     return result
 
 
 def fetch_passing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     """
     Returns NGS passing stats keyed by gsis_id.
-    Includes CPOE (completion % over expected), aggressiveness, time to throw.
+    Includes CPOE, aggressiveness, time to throw.
     """
-    df = _fetch_ngs("passing", years)
-    if df.empty:
+    try:
+        df = nflr.load_nextgen_stats(years, "passing").to_pandas()
+    except Exception as e:
+        logger.error("load_nextgen_stats passing failed: %s", e)
         return {}
+
+    df = df[df["week"] == 0].copy()
 
     result: dict[str, dict] = {}
     for _, row in df.iterrows():
-        gsis_id = str(row.get("player_gsis_id", ""))
+        gsis_id = str(row.get("player_gsis_id", "")).strip()
         if not gsis_id:
             continue
         season = int(row["season"])
         suffix = f"_{season}"
-        data = _row_to_dict(row, PASS_COLS)
 
         if gsis_id not in result:
             result[gsis_id] = {
@@ -177,32 +276,37 @@ def fetch_passing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
                 "player_display_name": str(row.get("player_display_name", "")),
             }
 
+        cpoe   = _safe_val(row.get("completion_percentage_above_expectation"))
+        agg    = _safe_val(row.get("aggressiveness"))
+        ttt    = _safe_val(row.get("avg_time_to_throw"))
+        rating = _safe_val(row.get("passer_rating"))
+        comp   = _safe_val(row.get("completion_percentage"))
+
         result[gsis_id].update({
-            f"pass_attempts{suffix}":   data.get("attempts"),
-            f"pass_yards{suffix}":      data.get("pass_yards"),
-            f"pass_tds{suffix}":        data.get("pass_touchdowns"),
-            f"interceptions{suffix}":   data.get("interceptions"),
-            f"completion_pct{suffix}":  round(data["completion_percentage"], 1) if data.get("completion_percentage") else None,
-            f"cpoe{suffix}":            round(data["completion_percentage_above_expectation"], 2) if data.get("completion_percentage_above_expectation") else None,
-            f"aggressiveness{suffix}":  round(data["aggressiveness"], 1) if data.get("aggressiveness") else None,
-            f"time_to_throw{suffix}":   round(data["avg_time_to_throw"], 2) if data.get("avg_time_to_throw") else None,
-            f"passer_rating{suffix}":   round(data["passer_rating"], 1) if data.get("passer_rating") else None,
+            f"pass_attempts{suffix}":   _safe_val(row.get("attempts")),
+            f"pass_yards{suffix}":      _safe_val(row.get("pass_yards")),
+            f"pass_tds{suffix}":        _safe_val(row.get("pass_touchdowns")),
+            f"interceptions{suffix}":   _safe_val(row.get("interceptions")),
+            f"completion_pct{suffix}":  round(comp, 1) if comp is not None else None,
+            f"cpoe{suffix}":            round(cpoe, 2) if cpoe is not None else None,
+            f"aggressiveness{suffix}":  round(agg, 1) if agg is not None else None,
+            f"time_to_throw{suffix}":   round(ttt, 2) if ttt is not None else None,
+            f"passer_rating{suffix}":   round(rating, 1) if rating is not None else None,
         })
 
-    logger.info(f"Fetched NGS passing stats for {len(result)} players ({years})")
+    logger.info("Fetched NGS passing stats for %d players (%s)", len(result), years)
     return result
 
 
 def fetch_games_missed(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     """
-    Computes accurate games missed per player per season from official
-    NFL injury reports. A player missed a game if they were listed as 'Out'
-    for that week. Keyed by gsis_id.
+    Computes games missed per player per season from NFL injury reports.
+    Still uses nfl_data_py because nflreadpy's 2025 injury feed is incomplete.
     """
     try:
         injuries = nfl.import_injuries(years)
     except Exception as e:
-        logger.error(f"Failed to fetch injury data: {e}")
+        logger.error("Failed to fetch injury data: %s", e)
         return {}
 
     result: dict[str, dict] = {}
@@ -218,8 +322,6 @@ def fetch_games_missed(years: list[int] = [2024, 2025]) -> dict[str, dict]:
             .reset_index()
             .rename(columns={"week": f"games_missed_{season}"})
         )
-
-        # Also grab primary injury type for most recent Out week
         injury_types = (
             season_df.dropna(subset=["report_primary_injury"])
             .sort_values("week", ascending=False)
@@ -241,102 +343,7 @@ def fetch_games_missed(years: list[int] = [2024, 2025]) -> dict[str, dict]:
                 result[gsis_id] = {"gsis_id": gsis_id}
             result[gsis_id][f"injury_type_{season}"] = row[f"injury_type_{season}"]
 
-    logger.info(f"Computed games missed for {len(result)} players ({years})")
-    return result
-
-
-def fetch_rosters(years: list[int] = [2024, 2025]) -> dict[str, dict]:
-    """
-    Fetches roster data (position, team, age, depth, status) keyed by gsis_id.
-    Uses the most recent year's entry when a player appears in multiple years.
-    """
-    frames = []
-    for yr in sorted(years):  # ascending so newer year overwrites older
-        try:
-            frames.append(nfl.import_seasonal_rosters([yr]))
-        except Exception as e:
-            logger.warning(f"Roster data not available for {yr}: {e}")
-    if not frames:
-        return {}
-
-    df = pd.concat(frames, ignore_index=True)
-    df = df.sort_values("season", ascending=True)  # newest last = wins on update
-
-    result: dict[str, dict] = {}
-    for _, row in df.iterrows():
-        gsis_id = str(row.get("player_id", ""))
-        if not gsis_id:
-            continue
-        name = str(row.get("player_name", "")).strip()
-        if not name:
-            continue
-        result[gsis_id] = {
-            "gsis_id":              gsis_id,
-            "player_display_name":  name,
-            "position":             _safe_val(row.get("position")),
-            "team":                 _safe_val(row.get("team")),
-            "age":                  _safe_val(row.get("age")),
-            "years_exp":            _safe_val(row.get("years_exp")),
-            "depth_chart_order":    _safe_val(row.get("depth_chart_position")),
-            "status":               _safe_val(row.get("status")),
-            "sleeper_id":           _safe_val(row.get("sleeper_id")),
-        }
-
-    logger.info(f"Fetched rosters for {len(result)} players ({years})")
-    return result
-
-
-def fetch_seasonal_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
-    """
-    Fetches regular-season totals from nfl_data_py for all positions.
-    Provides baseline receiving stats for RBs (NGS receiving excludes them),
-    rushing stats for QBs/WRs not in NGS rushing, fantasy points, and usage metrics.
-    NGS data takes priority when both sources cover the same player+field.
-    """
-    frames = []
-    for yr in years:
-        try:
-            frames.append(nfl.import_seasonal_data([yr], s_type="REG"))
-        except Exception as e:
-            logger.warning(f"Seasonal data not available for {yr}: {e}")
-    if not frames:
-        return {}
-
-    df = pd.concat(frames, ignore_index=True)
-
-    result: dict[str, dict] = {}
-    for _, row in df.iterrows():
-        gsis_id = str(row.get("player_id", ""))
-        if not gsis_id:
-            continue
-        season = int(row["season"])
-        suffix = f"_{season}"
-
-        if gsis_id not in result:
-            result[gsis_id] = {"gsis_id": gsis_id}
-
-        fp_std = _safe_val(row.get("fantasy_points"))
-        fp_ppr = _safe_val(row.get("fantasy_points_ppr"))
-        fp_half = round((fp_std + fp_ppr) / 2, 1) if fp_std is not None and fp_ppr is not None else None
-
-        result[gsis_id].update({
-            f"rush_attempts{suffix}":           _safe_val(row.get("carries")),
-            f"rush_yards{suffix}":              _safe_val(row.get("rushing_yards")),
-            f"rush_tds{suffix}":                _safe_val(row.get("rushing_tds")),
-            f"targets{suffix}":                 _safe_val(row.get("targets")),
-            f"receptions{suffix}":              _safe_val(row.get("receptions")),
-            f"rec_yards{suffix}":               _safe_val(row.get("receiving_yards")),
-            f"rec_tds{suffix}":                 _safe_val(row.get("receiving_tds")),
-            f"fantasy_points_std{suffix}":      fp_std,
-            f"fantasy_points_ppr{suffix}":      fp_ppr,
-            f"fantasy_points_half_ppr{suffix}": fp_half,
-            f"games_played{suffix}":            _safe_val(row.get("games")),
-            f"target_share{suffix}":            round(_safe_val(row.get("tgt_sh")) * 100, 1)
-                                                if _safe_val(row.get("tgt_sh")) is not None else None,
-            f"wopr{suffix}":                    round(float(_safe_val(row.get("wopr_y")) or 0), 3) or None,
-        })
-
-    logger.info(f"Fetched seasonal stats for {len(result)} players ({years})")
+    logger.info("Computed games missed for %d players (%s)", len(result), years)
     return result
 
 
@@ -348,7 +355,7 @@ def build_nfl_data(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     NGS passing -> injuries. Later sources overwrite earlier ones so that
     higher-quality NGS metrics always win over basic seasonal counts.
     """
-    logger.info(f"Building NFL data for years {years}...")
+    logger.info("Building NFL data for years %s...", years)
 
     rosters   = fetch_rosters(years)
     seasonal  = fetch_seasonal_stats(years)
@@ -366,8 +373,7 @@ def build_nfl_data(years: list[int] = [2024, 2025]) -> dict[str, dict]:
             for k, v in data.items():
                 if k == "gsis_id":
                     continue
-                # NGS/injury values are written unconditionally so they win
-                # over seasonal values; seasonal only sets when key is absent
+                # Seasonal only fills gaps — NGS/injuries always win
                 if source is seasonal:
                     if k not in merged[gsis_id] or merged[gsis_id][k] is None:
                         merged[gsis_id][k] = v
@@ -375,37 +381,33 @@ def build_nfl_data(years: list[int] = [2024, 2025]) -> dict[str, dict]:
                     if v is not None:
                         merged[gsis_id][k] = v
 
-    logger.info(f"NFL data built for {len(merged)} players")
+    logger.info("NFL data built for %d players", len(merged))
     return merged
 
 
 def build_name_gsis_lookup(nfl_data: dict[str, dict]) -> dict[str, str]:
-    """
-    Builds a normalized_name -> gsis_id lookup from already-fetched NGS data.
-    Used as fallback for Sleeper players whose gsis_id field is empty.
-    """
+    """Builds a normalized_name -> gsis_id lookup from already-fetched data."""
     lookup: dict[str, str] = {}
     for gsis_id, data in nfl_data.items():
         name = data.get("player_display_name", "").strip()
         if name:
             lookup[_norm_name(name)] = gsis_id
-    logger.info(f"Built name->gsis_id lookup with {len(lookup)} entries")
+    logger.info("Built name->gsis_id lookup with %d entries", len(lookup))
     return lookup
 
 
 def save_name_gsis_lookup(lookup: dict[str, str]) -> None:
     RAW_DATA_PATH.mkdir(parents=True, exist_ok=True)
-    file_path = RAW_DATA_PATH / "name_gsis_lookup.json"
-    with open(file_path, "w") as f:
+    with open(RAW_DATA_PATH / "name_gsis_lookup.json", "w") as f:
         json.dump(lookup, f)
-    logger.info(f"Saved name->gsis_id lookup ({len(lookup)} entries)")
+    logger.info("Saved name->gsis_id lookup (%d entries)", len(lookup))
 
 
 def load_name_gsis_lookup() -> dict[str, str]:
-    file_path = RAW_DATA_PATH / "name_gsis_lookup.json"
-    if not file_path.exists():
+    path = RAW_DATA_PATH / "name_gsis_lookup.json"
+    if not path.exists():
         return {}
-    with open(file_path) as f:
+    with open(path) as f:
         return json.load(f)
 
 
@@ -417,6 +419,7 @@ def hash_nfl_player(data: dict) -> str:
         "rec_yards_2025":     data.get("rec_yards_2025"),
         "games_missed_2025":  data.get("games_missed_2025"),
         "pass_yards_2025":    data.get("pass_yards_2025"),
+        "fantasy_points_half_ppr_2025": data.get("fantasy_points_half_ppr_2025"),
     }
     content = json.dumps(watchlist, sort_keys=True)
     return hashlib.md5(content.encode()).hexdigest()
@@ -433,16 +436,14 @@ def find_changed_nfl_players(old: list[dict], new: dict[str, dict]) -> list[str]
 
 
 def save_nfl_data(data: dict[str, dict]) -> None:
-    """Saves NFL data to data/raw/nfl_data.json."""
     RAW_DATA_PATH.mkdir(parents=True, exist_ok=True)
     file_path = RAW_DATA_PATH / "nfl_data.json"
     with open(file_path, "w") as f:
         json.dump(list(data.values()), f, indent=2)
-    logger.info(f"Saved NFL data for {len(data)} players to {file_path}")
+    logger.info("Saved NFL data for %d players to %s", len(data), file_path)
 
 
 def load_nfl_data() -> dict[str, dict]:
-    """Loads previously saved NFL data, keyed by gsis_id."""
     file_path = RAW_DATA_PATH / "nfl_data.json"
     if not file_path.exists():
         return {}
