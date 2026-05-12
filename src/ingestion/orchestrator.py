@@ -13,12 +13,17 @@ from src.ingestion.fantasypros_agent import (
     fetch_rankings,
     fetch_stats,
     fetch_adp,
-    find_changed_fp_players,
     save_rankings,
     save_stats,
     load_existing_rankings,
     load_existing_stats,
     _normalize_name,
+)
+from src.ingestion.nfl_data_agent import (
+    build_nfl_data,
+    save_nfl_data,
+    load_nfl_data,
+    find_changed_nfl_players,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,7 +52,6 @@ def _calculate_injury_risk(games_missed_2024: int, games_missed_2025: int,
         for part in ["hamstring", "acl", "pcl", "achilles", "knee", "quad"]
     )
 
-    # Missing 5+ games in a single season is immediately high risk
     if missed_25 >= 5 or total_missed >= 9 or soft_tissue_2025:
         return "high"
     elif total_missed >= 3:
@@ -59,7 +63,7 @@ def _calculate_trend(finish_2024: int | None, finish_2025: int | None) -> str:
     """Determines performance trend from 2024 → 2025."""
     if not finish_2024 or not finish_2025:
         return "unknown"
-    diff = finish_2024 - finish_2025  # positive = improved (lower rank number = better)
+    diff = finish_2024 - finish_2025  # positive = improved (lower rank = better)
     if diff >= 10:
         return "improving"
     elif diff <= -10:
@@ -86,34 +90,52 @@ def _calculate_bust_signal(ecr_vs_adp: float | None, games_missed_2024: int,
     missed_24 = games_missed_2024 or 0
     total_missed = missed_24 + missed_25
 
-    # Missed more than half a season in 2025 alone is a bust signal regardless of 2024
     if missed_25 >= 9:
         return True
-    # Combined 2-season missed games threshold
     if total_missed > 8:
         return True
-    # Declining production AND entering the fragile side of a career
     if trend == "declining" and (age or 0) >= 29:
         return True
     return False
 
 
-def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict) -> dict:
+def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
+                  nfl_data: dict[str, dict]) -> dict:
     """
-    Merges a Sleeper player document with FantasyPros rankings and stats
-    into a single rich document.
+    Merges Sleeper + FantasyPros + nfl-data-py into a single rich document.
+    nfl_data is the authoritative source for games missed and advanced NGS stats.
+    Keyed by gsis_id for the nfl_data lookup.
     """
     name = sleeper.get("full_name", "")
     norm = _normalize_name(name)
+    gsis_id = sleeper.get("gsis_id") or ""
 
     rk = fp_rankings.get(norm, {})
     st = fp_stats.get(norm, {})
+    ngs = nfl_data.get(gsis_id, {})
 
-    games_played_2025 = st.get("games_played_half_2025")
-    games_played_2024 = st.get("games_played_half_2024")
-    games_missed_2025 = (17 - games_played_2025) if games_played_2025 else None
-    games_missed_2024 = (17 - games_played_2024) if games_played_2024 else None
+    # --- Games missed: nfl_data is authoritative; fall back to FantasyPros calc ---
+    fp_games_played_2025 = st.get("games_played_half_2025")
+    fp_games_played_2024 = st.get("games_played_half_2024")
 
+    games_missed_2025 = (
+        ngs.get("games_missed_2025")
+        or ((17 - fp_games_played_2025) if fp_games_played_2025 else None)
+    )
+    games_missed_2024 = (
+        ngs.get("games_missed_2024")
+        or ((17 - fp_games_played_2024) if fp_games_played_2024 else None)
+    )
+    games_played_2025 = (
+        (17 - games_missed_2025) if games_missed_2025 is not None
+        else fp_games_played_2025
+    )
+    games_played_2024 = (
+        (17 - games_missed_2024) if games_missed_2024 is not None
+        else fp_games_played_2024
+    )
+
+    # --- ADP / ECR ---
     adp = st.get("adp_2025")
     ecr = st.get("ecr_2025")
     ecr_vs_adp = round(ecr - adp, 2) if ecr and adp else None
@@ -122,11 +144,13 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict) -> dict:
     finish_2024 = st.get("finish_rank_half_2024")
     value_vs_adp = round(finish_2025 - adp, 2) if finish_2025 and adp else None
 
+    # --- Signals ---
     trend = _calculate_trend(finish_2024, finish_2025)
+    injury_type_2025 = ngs.get("injury_type_2025") or sleeper.get("injury_body_part")
     injury_risk = _calculate_injury_risk(
         games_missed_2024 or 0,
         games_missed_2025 or 0,
-        sleeper.get("injury_body_part"),
+        injury_type_2025,
     )
     sleeper_signal = _calculate_sleeper_signal(
         ecr_vs_adp, finish_2024, finish_2025, games_played_2025
@@ -142,6 +166,7 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict) -> dict:
     return {
         # identity
         "player_id": sleeper.get("player_id"),
+        "gsis_id": gsis_id,
         "fp_id": rk.get("fp_id") or st.get("fp_id", ""),
         "full_name": name,
         "position": sleeper.get("position"),
@@ -172,7 +197,7 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict) -> dict:
         "adp_std_dev_2025": st.get("adp_std_dev_2025"),
         "value_vs_adp_2025": value_vs_adp,
 
-        # 2025 performance
+        # 2025 performance (FantasyPros for fantasy points/rank)
         "fantasy_points_std_2025": st.get("fantasy_points_std_2025"),
         "fantasy_points_half_ppr_2025": st.get("fantasy_points_half_2025"),
         "fantasy_points_ppr_2025": st.get("fantasy_points_ppr_2025"),
@@ -183,11 +208,56 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict) -> dict:
         "finish_rank_half_ppr_2025": finish_2025,
         "finish_rank_ppr_2025": st.get("finish_rank_ppr_2025"),
 
-        # 2024 performance (trend)
+        # 2024 performance
         "fantasy_points_half_ppr_2024": st.get("fantasy_points_half_2024"),
         "finish_rank_half_ppr_2024": finish_2024,
         "games_played_2024": games_played_2024,
         "games_missed_2024": games_missed_2024,
+
+        # NGS rushing stats (authoritative, from nfl-data-py)
+        "rush_attempts_2025":       ngs.get("rush_attempts_2025"),
+        "rush_yards_2025":          ngs.get("rush_yards_2025"),
+        "ypc_2025":                 ngs.get("ypc_2025"),
+        "rush_tds_2025":            ngs.get("rush_tds_2025"),
+        "ryoe_2025":                ngs.get("ryoe_2025"),
+        "ryoe_per_att_2025":        ngs.get("ryoe_per_att_2025"),
+        "rush_efficiency_2025":     ngs.get("rush_efficiency_2025"),
+        "pct_vs_8_defenders_2025":  ngs.get("pct_vs_8_defenders_2025"),
+        "rush_attempts_2024":       ngs.get("rush_attempts_2024"),
+        "rush_yards_2024":          ngs.get("rush_yards_2024"),
+        "ypc_2024":                 ngs.get("ypc_2024"),
+        "ryoe_2024":                ngs.get("ryoe_2024"),
+
+        # NGS receiving stats
+        "targets_2025":             ngs.get("targets_2025"),
+        "receptions_2025":          ngs.get("receptions_2025"),
+        "rec_yards_2025":           ngs.get("rec_yards_2025"),
+        "rec_tds_2025":             ngs.get("rec_tds_2025"),
+        "catch_pct_2025":           ngs.get("catch_pct_2025"),
+        "avg_separation_2025":      ngs.get("avg_separation_2025"),
+        "air_yards_share_2025":     ngs.get("air_yards_share_2025"),
+        "yac_above_expected_2025":  ngs.get("yac_above_expected_2025"),
+        "targets_2024":             ngs.get("targets_2024"),
+        "rec_yards_2024":           ngs.get("rec_yards_2024"),
+        "avg_separation_2024":      ngs.get("avg_separation_2024"),
+
+        # NGS passing stats
+        "pass_attempts_2025":   ngs.get("pass_attempts_2025"),
+        "pass_yards_2025":      ngs.get("pass_yards_2025"),
+        "pass_tds_2025":        ngs.get("pass_tds_2025"),
+        "interceptions_2025":   ngs.get("interceptions_2025"),
+        "completion_pct_2025":  ngs.get("completion_pct_2025"),
+        "cpoe_2025":            ngs.get("cpoe_2025"),
+        "aggressiveness_2025":  ngs.get("aggressiveness_2025"),
+        "time_to_throw_2025":   ngs.get("time_to_throw_2025"),
+        "passer_rating_2025":   ngs.get("passer_rating_2025"),
+        "pass_attempts_2024":   ngs.get("pass_attempts_2024"),
+        "pass_yards_2024":      ngs.get("pass_yards_2024"),
+        "cpoe_2024":            ngs.get("cpoe_2024"),
+
+        # injury detail
+        "injury_type_2025":    ngs.get("injury_type_2025"),
+        "injury_type_2024":    ngs.get("injury_type_2024"),
 
         # calculated signals
         "injury_risk_score": injury_risk,
@@ -199,8 +269,7 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict) -> dict:
 
 def build_player_documents(league_format: str = "redraft") -> list[dict]:
     """
-    Merges Sleeper + FantasyPros data into rich player documents.
-    Returns list of documents ready for embedding.
+    Merges Sleeper + FantasyPros + nfl-data-py into rich player documents.
     """
     logger.info("Loading Sleeper player data...")
     sleeper_players = _load_sleeper_players()
@@ -216,18 +285,25 @@ def build_player_documents(league_format: str = "redraft") -> list[dict]:
     stats_list = load_existing_stats()
     fp_stats = {_normalize_name(p.get("name", "")): p for p in stats_list}
 
-    logger.info(f"Merging {len(sleeper_players)} Sleeper players with FantasyPros data...")
+    logger.info("Loading NFL data (NGS + injuries)...")
+    nfl_data = load_nfl_data()  # keyed by gsis_id
+
+    ngs_matched = sum(1 for p in sleeper_players if p.get("gsis_id") in nfl_data)
+    logger.info(f"NGS data matched for {ngs_matched} / {len(sleeper_players)} players")
+
+    logger.info(f"Merging {len(sleeper_players)} players...")
     documents = []
-    matched = 0
+    fp_matched = 0
     for player in sleeper_players:
-        doc = _merge_player(player, fp_rankings, fp_stats)
+        doc = _merge_player(player, fp_rankings, fp_stats, nfl_data)
         doc["league_format"] = league_format
         documents.append(doc)
         norm = _normalize_name(player.get("full_name", ""))
         if norm in fp_rankings or norm in fp_stats:
-            matched += 1
+            fp_matched += 1
 
-    logger.info(f"Merged {len(documents)} documents, {matched} with FantasyPros data")
+    logger.info(f"Built {len(documents)} documents — {fp_matched} with FP data, "
+                f"{ngs_matched} with NGS data")
     return documents
 
 
@@ -252,11 +328,11 @@ def load_player_documents() -> list[dict]:
 def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
     """
     Full pipeline refresh:
-    1. Fetch fresh Sleeper data and detect changes
-    2. Fetch fresh FantasyPros data
-    3. Merge into player documents
-    4. Update only changed players in Chroma (or all if force=True)
-    5. Save updated raw and processed data
+    1. Sleeper: fetch fresh player data, detect changes
+    2. FantasyPros: rankings + stats + ADP
+    3. nfl-data-py: NGS stats + accurate injury/games-missed data
+    4. Merge all into player documents
+    5. Update Chroma (incremental or full rebuild)
     """
     from src.vectorstore.chroma_store import build_vectorstore, update_players, get_collection_count
 
@@ -275,11 +351,9 @@ def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
     logger.info("Fetching fresh FantasyPros rankings...")
     try:
         new_rankings = fetch_rankings()
-        old_rankings = load_existing_rankings()
         save_rankings(new_rankings)
     except Exception as e:
         logger.error(f"FantasyPros rankings fetch failed: {e} — using cached data")
-        new_rankings = {_normalize_name(p.get("name", "")): p for p in load_existing_rankings()}
 
     # Step 3: FantasyPros stats + ADP
     logger.info("Fetching fresh FantasyPros stats and ADP...")
@@ -294,22 +368,39 @@ def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
         save_stats(new_stats)
     except Exception as e:
         logger.error(f"FantasyPros stats fetch failed: {e} — using cached data")
-        new_stats = {_normalize_name(p.get("name", "")): p for p in load_existing_stats()}
 
-    # Step 4: Merge all into player documents
-    logger.info("Merging all data sources into player documents...")
+    # Step 4: nfl-data-py (NGS + injuries)
+    logger.info("Fetching fresh NFL data (NGS + injuries)...")
+    try:
+        old_nfl_data = load_nfl_data()
+        new_nfl_data = build_nfl_data([2024, 2025])
+        changed_gsis_ids = set(
+            find_changed_nfl_players(list(old_nfl_data.values()), new_nfl_data)
+        ) if not force else set(new_nfl_data.keys())
+        save_nfl_data(new_nfl_data)
+        logger.info(f"NFL data: {len(new_nfl_data)} players, {len(changed_gsis_ids)} changed")
+    except Exception as e:
+        logger.error(f"NFL data fetch failed: {e} — using cached data")
+        changed_gsis_ids = set()
+
+    # Step 5: Merge into player documents
+    logger.info("Merging all sources into player documents...")
     documents = build_player_documents(league_format)
     save_player_documents(documents)
 
-    # Step 5: Update Chroma
+    # Step 6: Update Chroma
     collection_count = get_collection_count()
     if collection_count == 0 or force:
         logger.info("Building vectorstore from scratch...")
         build_vectorstore(documents)
     else:
-        # Only re-embed players whose Sleeper data changed
-        changed_ids = {p["player_id"] for p in changed_sleeper}
-        changed_docs = [d for d in documents if d.get("player_id") in changed_ids]
+        # Re-embed players whose Sleeper data OR NGS data changed
+        changed_sleeper_ids = {p["player_id"] for p in changed_sleeper}
+        changed_docs = [
+            d for d in documents
+            if d.get("player_id") in changed_sleeper_ids
+            or d.get("gsis_id") in changed_gsis_ids
+        ]
         logger.info(f"Updating {len(changed_docs)} changed players in Chroma...")
         update_players(changed_docs)
 

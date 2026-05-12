@@ -61,6 +61,7 @@ def filter_players(players: dict, league_format: str = "redraft") -> list:
             "injury_start_date": player.get("injury_start_date"),
             "practice_participation": player.get("practice_participation"),
             "search_rank": player.get("search_rank"),
+            "gsis_id": player.get("gsis_id"),
         })
     
     return filtered

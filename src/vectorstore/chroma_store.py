@@ -27,6 +27,16 @@ def _get_embeddings() -> HuggingFaceEmbeddings:
     return _embeddings
 
 
+def _fmt(val, decimals: int = 1, suffix: str = "") -> str:
+    """Formats a numeric value or returns 'N/A'."""
+    if val is None:
+        return "N/A"
+    try:
+        return f"{float(val):.{decimals}f}{suffix}"
+    except (TypeError, ValueError):
+        return str(val)
+
+
 def _player_to_text(player: dict) -> str:
     """
     Converts a merged player document to rich natural-language text for embedding.
@@ -80,14 +90,22 @@ def _player_to_text(player: dict) -> str:
     injury_risk = player.get("injury_risk_score", "unknown")
     injury_status = player.get("injury_status") or "None"
     injury_part = player.get("injury_body_part") or ""
+    injury_type_25 = player.get("injury_type_2025") or ""
+    injury_type_24 = player.get("injury_type_2024") or ""
 
     injury_line = f"Injury risk: {injury_risk.capitalize()}"
     if gm_24:
-        injury_line += f" — missed {gm_24} games in 2024"
+        inj_str = f" — missed {gm_24} games in 2024"
+        if injury_type_24:
+            inj_str += f" ({injury_type_24})"
+        injury_line += inj_str
     if gm_25:
-        injury_line += f", {gm_25} in 2025"
+        inj_str = f", {gm_25} in 2025"
+        if injury_type_25:
+            inj_str += f" ({injury_type_25})"
+        injury_line += inj_str
     if injury_part:
-        injury_line += f" ({injury_part})"
+        injury_line += f" | Current: {injury_part}"
 
     # signals
     trend = player.get("trend", "unknown")
@@ -108,7 +126,7 @@ def _player_to_text(player: dict) -> str:
         f"{name} | {pos} | {team} | Age: {age} | Experience: {exp} years",
         "",
         "2026 DRAFT RANKINGS:",
-        f"Standard: {pos}{rk_std} (Overall: {rk_std}) | Half PPR: {pos}{rk_half} (Overall: {rk_half}) | PPR: {pos}{rk_ppr} (Overall: {rk_ppr}) | Dynasty: {pos}{rk_dyn}",
+        f"Standard: {pos}{rk_std} | Half PPR: {pos}{rk_half} | PPR: {pos}{rk_ppr} | Dynasty: {pos}{rk_dyn}",
         "",
         "2025 PERFORMANCE:",
         f"Fantasy Points (Half PPR): {fpts_25} | Points Per Game: {ppg_25}",
@@ -116,9 +134,85 @@ def _player_to_text(player: dict) -> str:
         adp_line,
         "",
         "2024 PERFORMANCE:",
-        f"Fantasy Points (Half PPR): {fpts_24} | Points Per Game: N/A",
+        f"Fantasy Points (Half PPR): {fpts_24}",
         f"Games Played: {gp_24} of 17 (missed {gm_24}) | Finish: {pos}{fin_24}",
         "",
+    ]
+
+    # ── Position-specific NGS advanced stats ─────────────────────────────────
+    if pos == "RB":
+        lines += [
+            "ADVANCED RUSHING STATS (NGS):",
+            f"2025: {player.get('rush_attempts_2025', 'N/A')} att, "
+            f"{player.get('rush_yards_2025', 'N/A')} yds, "
+            f"YPC {_fmt(player.get('ypc_2025'), 2)}, "
+            f"RYOE {_fmt(player.get('ryoe_2025'), 1)} ({_fmt(player.get('ryoe_per_att_2025'), 3)}/att), "
+            f"Rush TDs {player.get('rush_tds_2025', 'N/A')}, "
+            f"Efficiency {_fmt(player.get('rush_efficiency_2025'), 2)}, "
+            f"% vs 8+ defenders {_fmt(player.get('pct_vs_8_defenders_2025'), 1)}",
+            f"2024: {player.get('rush_attempts_2024', 'N/A')} att, "
+            f"{player.get('rush_yards_2024', 'N/A')} yds, "
+            f"YPC {_fmt(player.get('ypc_2024'), 2)}, "
+            f"RYOE {_fmt(player.get('ryoe_2024'), 1)} ({_fmt(player.get('ryoe_per_att_2024'), 3)}/att), "
+            f"Rush TDs {player.get('rush_tds_2024', 'N/A')}",
+            "",
+        ]
+        # RBs also have receiving component
+        if player.get("targets_2025") or player.get("targets_2024"):
+            lines += [
+                "RECEIVING STATS (NGS):",
+                f"2025: {player.get('targets_2025', 'N/A')} tgt, "
+                f"{player.get('receptions_2025', 'N/A')} rec, "
+                f"{player.get('rec_yards_2025', 'N/A')} yds, "
+                f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
+                f"Avg separation {_fmt(player.get('avg_separation_2025'), 2)} yds",
+                "",
+            ]
+
+    elif pos in ("WR", "TE"):
+        lines += [
+            "ADVANCED RECEIVING STATS (NGS):",
+            f"2025: {player.get('targets_2025', 'N/A')} tgt, "
+            f"{player.get('receptions_2025', 'N/A')} rec, "
+            f"{player.get('rec_yards_2025', 'N/A')} yds, "
+            f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
+            f"Rec TDs {player.get('rec_tds_2025', 'N/A')}, "
+            f"Avg separation {_fmt(player.get('avg_separation_2025'), 2)} yds, "
+            f"Air yards share {_fmt(player.get('air_yards_share_2025'), 1)}%, "
+            f"YAC above expected {_fmt(player.get('yac_above_expected_2025'), 2)}",
+            f"2024: {player.get('targets_2024', 'N/A')} tgt, "
+            f"{player.get('receptions_2024', 'N/A')} rec, "
+            f"{player.get('rec_yards_2024', 'N/A')} yds, "
+            f"Catch% {_fmt(player.get('catch_pct_2024'), 1)}, "
+            f"Rec TDs {player.get('rec_tds_2024', 'N/A')}, "
+            f"Avg separation {_fmt(player.get('avg_separation_2024'), 2)} yds, "
+            f"Air yards share {_fmt(player.get('air_yards_share_2024'), 1)}%",
+            "",
+        ]
+
+    elif pos == "QB":
+        lines += [
+            "ADVANCED PASSING STATS (NGS):",
+            f"2025: {player.get('pass_attempts_2025', 'N/A')} att, "
+            f"{player.get('pass_yards_2025', 'N/A')} yds, "
+            f"Pass TDs {player.get('pass_tds_2025', 'N/A')}, "
+            f"INTs {player.get('interceptions_2025', 'N/A')}, "
+            f"Comp% {_fmt(player.get('completion_pct_2025'), 1)} "
+            f"(CPOE {_fmt(player.get('cpoe_2025'), 2)}), "
+            f"Passer rating {_fmt(player.get('passer_rating_2025'), 1)}, "
+            f"Aggressiveness {_fmt(player.get('aggressiveness_2025'), 1)}, "
+            f"Time to throw {_fmt(player.get('time_to_throw_2025'), 2)}s",
+            f"2024: {player.get('pass_attempts_2024', 'N/A')} att, "
+            f"{player.get('pass_yards_2024', 'N/A')} yds, "
+            f"Pass TDs {player.get('pass_tds_2024', 'N/A')}, "
+            f"INTs {player.get('interceptions_2024', 'N/A')}, "
+            f"Comp% {_fmt(player.get('completion_pct_2024'), 1)} "
+            f"(CPOE {_fmt(player.get('cpoe_2024'), 2)}), "
+            f"Passer rating {_fmt(player.get('passer_rating_2024'), 1)}",
+            "",
+        ]
+
+    lines += [
         "INJURY HISTORY:",
         injury_line,
         "",
