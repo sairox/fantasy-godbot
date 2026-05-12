@@ -28,6 +28,7 @@ from src.ingestion.nfl_data_agent import (
     save_name_gsis_lookup,
     load_name_gsis_lookup,
     _norm_name,
+    fetch_rosters,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,21 +209,25 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "adp_std_dev_2025": st.get("adp_std_dev_2025"),
         "value_vs_adp_2025": value_vs_adp,
 
-        # 2025 performance (FantasyPros for fantasy points/rank)
-        "fantasy_points_std_2025": st.get("fantasy_points_std_2025"),
-        "fantasy_points_half_ppr_2025": st.get("fantasy_points_half_2025"),
-        "fantasy_points_ppr_2025": st.get("fantasy_points_ppr_2025"),
+        # 2025 performance (FantasyPros where available, nflverse seasonal as fallback)
+        "fantasy_points_std_2025": st.get("fantasy_points_std_2025") or ngs.get("fantasy_points_std_2025"),
+        "fantasy_points_half_ppr_2025": st.get("fantasy_points_half_2025") or ngs.get("fantasy_points_half_ppr_2025"),
+        "fantasy_points_ppr_2025": st.get("fantasy_points_ppr_2025") or ngs.get("fantasy_points_ppr_2025"),
         "points_per_game_2025": st.get("points_per_game_half_2025"),
-        "games_played_2025": games_played_2025,
+        "games_played_2025": games_played_2025 or ngs.get("games_played_2025"),
         "games_missed_2025": games_missed_2025,
         "finish_rank_std_2025": st.get("finish_rank_std_2025"),
         "finish_rank_half_ppr_2025": finish_2025,
         "finish_rank_ppr_2025": st.get("finish_rank_ppr_2025"),
+        "target_share_2025": ngs.get("target_share_2025"),
+        "wopr_2025": ngs.get("wopr_2025"),
 
         # 2024 performance
-        "fantasy_points_half_ppr_2024": st.get("fantasy_points_half_2024"),
+        "fantasy_points_half_ppr_2024": st.get("fantasy_points_half_2024") or ngs.get("fantasy_points_half_ppr_2024"),
+        "fantasy_points_std_2024": ngs.get("fantasy_points_std_2024"),
         "finish_rank_half_ppr_2024": finish_2024,
-        "games_played_2024": games_played_2024,
+        "games_played_2024": games_played_2024 or ngs.get("games_played_2024"),
+        "target_share_2024": ngs.get("target_share_2024"),
         "games_missed_2024": games_missed_2024,
 
         # NGS rushing stats — all positions (RBs, QBs, gadget WRs)
@@ -297,8 +302,9 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
 
 def _build_stub_players_from_nfl_data(nfl_data: dict[str, dict]) -> list[dict]:
     """
-    Creates minimal Sleeper-like player stubs from nfl_data when Sleeper is unavailable.
-    Only includes players with meaningful stats (>= 50 carries or >= 30 targets or >= 50 pass attempts).
+    Creates Sleeper-like player stubs from nfl_data (rosters + stats) when
+    Sleeper is unavailable. Includes position/team/age from roster data.
+    Only includes players with meaningful production.
     """
     stubs = []
     for gsis_id, data in nfl_data.items():
@@ -306,25 +312,25 @@ def _build_stub_players_from_nfl_data(nfl_data: dict[str, dict]) -> list[dict]:
         if not name:
             continue
         rush = (data.get("rush_attempts_2025") or 0) + (data.get("rush_attempts_2024") or 0)
-        tgt = (data.get("targets_2025") or 0) + (data.get("targets_2024") or 0)
-        pa = (data.get("pass_attempts_2025") or 0) + (data.get("pass_attempts_2024") or 0)
+        tgt  = (data.get("targets_2025") or 0)  + (data.get("targets_2024") or 0)
+        pa   = (data.get("pass_attempts_2025") or 0) + (data.get("pass_attempts_2024") or 0)
         if rush < 50 and tgt < 30 and pa < 50:
             continue
         stubs.append({
-            "player_id": gsis_id,
-            "full_name": name,
-            "gsis_id": gsis_id,
-            "position": None,
-            "team": None,
-            "age": None,
-            "years_exp": None,
-            "status": "Active",
-            "depth_chart_order": None,
-            "injury_status": None,
-            "injury_body_part": None,
-            "injury_start_date": None,
+            "player_id":            gsis_id,
+            "full_name":            name,
+            "gsis_id":              gsis_id,
+            "position":             data.get("position"),
+            "team":                 data.get("team"),
+            "age":                  data.get("age"),
+            "years_exp":            data.get("years_exp"),
+            "status":               data.get("status") or "Active",
+            "depth_chart_order":    data.get("depth_chart_order"),
+            "injury_status":        None,
+            "injury_body_part":     None,
+            "injury_start_date":    None,
             "practice_participation": None,
-            "search_rank": None,
+            "search_rank":          None,
         })
     logger.info(f"Built {len(stubs)} player stubs from nfl_data")
     return stubs
@@ -377,9 +383,66 @@ def build_player_documents(league_format: str = "redraft") -> list[dict]:
         if norm in fp_rankings or norm in fp_stats:
             fp_matched += 1
 
+    _fill_computed_rankings(documents)
+
     logger.info(f"Built {len(documents)} documents — {fp_matched} with FP data, "
                 f"{direct + name_fallback} with NGS data")
     return documents
+
+
+_REPLACEMENT_RANK = {"QB": 14, "RB": 36, "WR": 48, "TE": 14, "K": 14}
+
+
+def _fill_computed_rankings(documents: list[dict]) -> None:
+    """
+    Computes VORP-based (Value Over Replacement Player) overall rankings from
+    recent fantasy points (65% 2025, 35% 2024).  VORP normalises position
+    scoring so elite RBs/WRs rank above fringe QBs, mirroring how actual
+    fantasy drafts work.  Fills rank fields only when official FP data is absent.
+    Modifies documents in-place.
+    """
+    def _raw_score(doc: dict) -> float:
+        fp25 = doc.get("fantasy_points_half_ppr_2025") or 0
+        fp24 = doc.get("fantasy_points_half_ppr_2024") or 0
+        return fp25 * 0.65 + fp24 * 0.35
+
+    # Build per-position replacement levels
+    pos_scores: dict[str, list[float]] = {}
+    for doc in documents:
+        pos = doc.get("position") or "UNK"
+        s = _raw_score(doc)
+        if s > 0:
+            pos_scores.setdefault(pos, []).append(s)
+
+    replacement: dict[str, float] = {}
+    for pos, scores in pos_scores.items():
+        scores.sort(reverse=True)
+        rep_idx = _REPLACEMENT_RANK.get(pos, 20) - 1
+        replacement[pos] = scores[rep_idx] if len(scores) > rep_idx else (scores[-1] if scores else 0)
+
+    # Compute VORP (negative = below replacement)
+    def _vorp(doc: dict) -> float:
+        pos = doc.get("position") or "UNK"
+        s = _raw_score(doc)
+        return s - replacement.get(pos, 0) if s > 0 else -9999
+
+    scored = [(i, _vorp(doc)) for i, doc in enumerate(documents)]
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    has_fp_ranks = any(doc.get("rank_half_ppr_2026") for doc in documents)
+
+    for computed_rank, (idx, v) in enumerate(scored, start=1):
+        doc = documents[idx]
+        doc["computed_rank_half_ppr"] = computed_rank if v > -9999 else 9999
+        if not has_fp_ranks and v > -9999:
+            if doc.get("rank_half_ppr_2026") is None:
+                doc["rank_half_ppr_2026"] = computed_rank
+            if doc.get("rank_standard_2026") is None:
+                doc["rank_standard_2026"] = computed_rank
+            if doc.get("rank_ppr_2026") is None:
+                doc["rank_ppr_2026"] = computed_rank
+
+    logger.info("Computed VORP rankings for %d players", len(documents))
 
 
 def save_player_documents(documents: list[dict]) -> None:

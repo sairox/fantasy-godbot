@@ -102,7 +102,19 @@ SYSTEM_PROMPT = (
     "  - Dynasty: also consider age, years experience, long-term trajectory\n"
     "- Be direct and opinionated - users want a clear recommendation, not a hedge\n"
     "- If asked a general question (not about a specific pick), answer conversationally "
-    "using all player data in context"
+    "using all player data in context\n\n"
+    "TRADE ANALYSIS FORMAT:\n"
+    "When the context includes a TRADE ANALYSIS section, structure your response as:\n\n"
+    "**Trade Verdict:** [Accept / Decline / Counter]\n"
+    "**Player A Analysis:** [2-3 sentences with specific stats — fantasy points, rank, NGS metrics]\n"
+    "**Player B Analysis:** [2-3 sentences with specific stats]\n"
+    "**Value Comparison:** [Who wins this trade and why, backed by numbers]\n"
+    "**Format Note:** [Any half-PPR / dynasty / redraft context that changes the calculus]\n\n"
+    "RANKING QUERIES:\n"
+    "When context shows ranked player documents, present them as a clean numbered list "
+    "with position, team, and 1-line rationale using stats from context. "
+    "Rankings are based on actual 2024-2025 performance data — cite the fantasy points "
+    "and NGS stats, not generic opinions."
 )
 
 
@@ -136,6 +148,41 @@ def _find_player_in_question(question: str) -> str | None:
         if re.search(r"\b" + re.escape(nickname) + r"\b", q):
             return full_name
     return None
+
+
+def _detect_trade_query(question: str) -> tuple[str, str] | None:
+    """
+    Detects trade comparison queries like 'trade CMC for Bijan' or
+    'is Kelce worth Lamb'. Returns (player_a, player_b) full names or None.
+    """
+    trade_patterns = [
+        r"\btrade\b.+\bfor\b",
+        r"\bworth\b",
+        r"\bshould i (trade|swap|give up)\b",
+        r"\bvs\.?\b",
+        r"\bcompare\b",
+        r"\bover\b.+\bor\b",
+    ]
+    q = question.lower()
+    if not any(re.search(p, q) for p in trade_patterns):
+        return None
+
+    # Collect all nickname matches in order of position
+    found: list[tuple[int, str]] = []
+    for nickname, full_name in _NICKNAMES.items():
+        m = re.search(r"\b" + re.escape(nickname) + r"\b", q)
+        if m:
+            found.append((m.start(), full_name))
+
+    # Deduplicate (same full name from multiple nicknames)
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for _, name in sorted(found):
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+
+    return (ordered[0], ordered[1]) if len(ordered) >= 2 else None
 
 
 def _format_docs(docs) -> str:
@@ -200,9 +247,23 @@ def create_chat_chain(league_format: str = "redraft"):
         flat_history = [msg for pair in history_window for msg in pair]
 
         top_n = _parse_ranking_query(question)
+        trade_players = _detect_trade_query(question)
+
         if top_n:
             docs = retrieve_top_players(top_n, league_format)
             pinned = ""
+        elif trade_players:
+            player_a, player_b = trade_players
+            doc_a = retrieve_player(player_a)
+            doc_b = retrieve_player(player_b)
+            pinned = (
+                f"=== TRADE ANALYSIS ===\n"
+                f"Comparing: {player_a} vs {player_b}\n\n"
+                f"--- {player_a.upper()} ---\n{doc_a}\n\n"
+                f"--- {player_b.upper()} ---\n{doc_b}\n\n"
+            )
+            docs = retriever.invoke(question)
+            logger.info("Trade query: %s vs %s", player_a, player_b)
         else:
             docs = retriever.invoke(question)
             pinned = ""

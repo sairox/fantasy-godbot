@@ -146,13 +146,16 @@ def _player_to_text(player: dict) -> str:
         f"Standard: {pos_str}{rk_std} | Half PPR: {pos_str}{rk_half} | PPR: {pos_str}{rk_ppr} | Dynasty: {pos_str}{rk_dyn}",
         "",
         "2025 PERFORMANCE:",
-        f"Fantasy Points (Half PPR): {fpts_25} | Points Per Game: {ppg_25}",
-        f"Games Played: {gp_25} of 17 (missed {gm_25}) | Finish: {pos_str}{fin_25}",
+        f"Fantasy Points (Half PPR): {fpts_25} | Points Per Game: {ppg_25} | "
+        f"Games: {gp_25} (missed {gm_25}) | Finish: {pos_str}{fin_25}" +
+        (f" | Target share: {_fmt(player.get('target_share_2025'), 1)}%" if player.get("target_share_2025") else "") +
+        (f" | WOPR: {_fmt(player.get('wopr_2025'), 3)}" if player.get("wopr_2025") else ""),
         adp_line,
         "",
         "2024 PERFORMANCE:",
-        f"Fantasy Points (Half PPR): {fpts_24}",
-        f"Games Played: {gp_24} of 17 (missed {gm_24}) | Finish: {pos_str}{fin_24}",
+        f"Fantasy Points (Half PPR): {fpts_24} | "
+        f"Games: {gp_24} (missed {gm_24}) | Finish: {pos_str}{fin_24}" +
+        (f" | Target share: {_fmt(player.get('target_share_2024'), 1)}%" if player.get("target_share_2024") else ""),
         "",
     ]
 
@@ -255,17 +258,21 @@ def _player_to_text(player: dict) -> str:
 def _player_to_document(player: dict) -> Document:
     """Converts a merged player dict into a LangChain Document."""
     text = _player_to_text(player)
+    computed = player.get("computed_rank_half_ppr") or 9999
     metadata = {
-        "player_id": str(player.get("player_id", "")),
-        "name": player.get("full_name", ""),
-        "position": player.get("position", ""),
-        "team": player.get("team", ""),
-        "league_format": player.get("league_format", "redraft"),
-        "adp_2025": player.get("adp_2025") or 999.0,
-        "rank_standard_2026": player.get("rank_standard_2026") or 9999,
-        "rank_half_ppr_2026": player.get("rank_half_ppr_2026") or 9999,
-        "rank_ppr_2026": player.get("rank_ppr_2026") or 9999,
-        "rank_dynasty_2026": player.get("rank_dynasty_2026") or 9999,
+        "player_id":            str(player.get("player_id", "")),
+        "name":                 player.get("full_name", ""),
+        "position":             player.get("position") or "",
+        "team":                 player.get("team") or "",
+        "league_format":        player.get("league_format", "redraft"),
+        "adp_2025":             float(player.get("adp_2025") or 999.0),
+        "rank_standard_2026":   int(player.get("rank_standard_2026") or computed),
+        "rank_half_ppr_2026":   int(player.get("rank_half_ppr_2026") or computed),
+        "rank_ppr_2026":        int(player.get("rank_ppr_2026") or computed),
+        "rank_dynasty_2026":    int(player.get("rank_dynasty_2026") or 9999),
+        "computed_rank_half_ppr": int(computed),
+        "fantasy_points_half_ppr_2025": float(player.get("fantasy_points_half_ppr_2025") or 0),
+        "fantasy_points_half_ppr_2024": float(player.get("fantasy_points_half_ppr_2024") or 0),
     }
     return Document(page_content=text, metadata=metadata)
 

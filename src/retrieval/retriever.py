@@ -57,33 +57,41 @@ _FORMAT_RANK_FIELD = {
 
 def retrieve_top_players(n: int = 12, league_format: str = "redraft") -> list[Document]:
     """
-    Retrieves the top-N ranked players by 2026 expert consensus rank.
-    Uses metadata filtering rather than semantic similarity so ranking queries
-    always return the actual highest-ranked players.
+    Retrieves the top-N ranked players using 2026 expert consensus rank when
+    available, falling back to stat-computed rank when FP data is absent.
+    Uses metadata filtering so ranking queries always return the actual
+    highest-ranked players rather than a semantic similarity approximation.
     """
     rank_field = _FORMAT_RANK_FIELD.get(league_format, "rank_half_ppr_2026")
     vs = get_vectorstore()
+    fetch_n = min(n * 3, 90)
 
-    # Fetch a buffer (2x) to ensure we have enough after filtering/sorting
-    fetch_n = min(n * 2, 60)
-    try:
+    def _fetch_by_field(field: str, limit: int) -> list[Document]:
         results = vs.get(
-            where={rank_field: {"$lte": fetch_n}},
+            where={field: {"$lte": limit}},
             include=["documents", "metadatas"],
         )
-        docs = []
-        for content, meta in zip(
-            results.get("documents", []), results.get("metadatas", [])
-        ):
-            docs.append(Document(page_content=content, metadata=meta))
-
-        docs.sort(key=lambda d: d.metadata.get(rank_field, 9999))
+        docs = [
+            Document(page_content=c, metadata=m)
+            for c, m in zip(results.get("documents", []), results.get("metadatas", []))
+        ]
+        docs.sort(key=lambda d: d.metadata.get(field, 9999))
         return docs[:n]
+
+    try:
+        docs = _fetch_by_field(rank_field, fetch_n)
+        # If official ranks returned fewer than half the requested players,
+        # fall back to computed rank (FP data unavailable)
+        if len(docs) < max(1, n // 2):
+            logger.info("Official ranks sparse (%d results), using computed rank", len(docs))
+            docs = _fetch_by_field("computed_rank_half_ppr", fetch_n)
+        return docs
     except Exception as e:
-        logger.warning(f"Top-players rank filter failed ({e}), falling back to similarity")
-        return vs.similarity_search(
-            f"top fantasy players first round picks", k=n
-        )
+        logger.warning("Rank filter failed (%s), using computed rank fallback", e)
+        try:
+            return _fetch_by_field("computed_rank_half_ppr", fetch_n)
+        except Exception:
+            return vs.similarity_search("top fantasy players first round picks", k=n)
 
 
 def retrieve_by_adp_range(pick_number: int, window: int = 5) -> list[Document]:
