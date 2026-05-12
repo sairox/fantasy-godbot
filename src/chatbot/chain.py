@@ -9,10 +9,46 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from langchain_core.messages import HumanMessage, AIMessage
 
-from src.retrieval.retriever import get_retriever, retrieve_player, retrieve_by_adp_range
+from src.retrieval.retriever import (
+    get_retriever, retrieve_player, retrieve_by_adp_range, retrieve_top_players,
+)
+
+import re
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _parse_ranking_query(question: str) -> int | None:
+    """
+    Returns N if the question is asking for a top-N player list, else None.
+    e.g. "top 12 players" → 12, "first round" → 12, "top 5 RBs" → 5
+    """
+    q = question.lower()
+    ranking_patterns = [
+        r"\btop[\s-]+(\d+)\b",
+        r"\bbest\s+(\d+)\b",
+        r"\bfirst\s+(\d+)\s+picks?\b",
+        r"\b(\d+)\s+best\b",
+    ]
+    for pattern in ranking_patterns:
+        m = re.search(pattern, q)
+        if m:
+            return min(int(m.group(1)), 30)
+
+    first_round_triggers = [
+        r"\bfirst[\s-]round\b", r"\b1st[\s-]round\b", r"\bround\s+1\b",
+        r"\bdraft\s+order\b", r"\bdraft\s+board\b",
+        r"\b1\.\d{2}\b",  # 1.01 – 1.12 style pick notation
+        r"\bwho\s+(goes|are|will\s+go|would\s+go)\s+(first|top|early)",
+        r"\btop\s+(overall|picks?|players?|guys?)\b",
+        r"\bbest\s+(overall|players?|picks?)\s+(to\s+draft|available|this\s+year)?\b",
+    ]
+    for pattern in first_round_triggers:
+        if re.search(pattern, q):
+            return 12
+
+    return None
 
 SYSTEM_PROMPT = """You are Fantasy GodBot, an expert fantasy football draft assistant.
 You have access to 2026 expert rankings, 2025 season performance data, 2024 season data,
@@ -109,7 +145,11 @@ def create_chat_chain(league_format: str = "redraft"):
         # Flatten window into a list of messages
         flat_history = [msg for pair in history_window for msg in pair]
 
-        docs = retriever.invoke(question)
+        top_n = _parse_ranking_query(question)
+        if top_n:
+            docs = retrieve_top_players(top_n, league_format)
+        else:
+            docs = retriever.invoke(question)
         context = _format_docs(docs)
 
         chain = prompt | llm | StrOutputParser()

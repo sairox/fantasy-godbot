@@ -238,7 +238,10 @@ def _player_to_document(player: dict) -> Document:
         "team": player.get("team", ""),
         "league_format": player.get("league_format", "redraft"),
         "adp_2025": player.get("adp_2025") or 999.0,
+        "rank_standard_2026": player.get("rank_standard_2026") or 9999,
         "rank_half_ppr_2026": player.get("rank_half_ppr_2026") or 9999,
+        "rank_ppr_2026": player.get("rank_ppr_2026") or 9999,
+        "rank_dynasty_2026": player.get("rank_dynasty_2026") or 9999,
     }
     return Document(page_content=text, metadata=metadata)
 

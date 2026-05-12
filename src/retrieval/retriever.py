@@ -13,7 +13,7 @@ def get_retriever(league_format: str = "redraft", position_filter: str | None = 
     """
     vs = get_vectorstore()
 
-    search_kwargs: dict = {"k": 8}
+    search_kwargs: dict = {"k": 12}
     if position_filter:
         search_kwargs["filter"] = {"position": position_filter.upper()}
 
@@ -45,6 +45,45 @@ def retrieve_player(player_name: str) -> str:
             return doc.page_content
 
     return top.page_content
+
+
+_FORMAT_RANK_FIELD = {
+    "redraft":  "rank_half_ppr_2026",
+    "half_ppr": "rank_half_ppr_2026",
+    "ppr":      "rank_ppr_2026",
+    "dynasty":  "rank_dynasty_2026",
+}
+
+
+def retrieve_top_players(n: int = 12, league_format: str = "redraft") -> list[Document]:
+    """
+    Retrieves the top-N ranked players by 2026 expert consensus rank.
+    Uses metadata filtering rather than semantic similarity so ranking queries
+    always return the actual highest-ranked players.
+    """
+    rank_field = _FORMAT_RANK_FIELD.get(league_format, "rank_half_ppr_2026")
+    vs = get_vectorstore()
+
+    # Fetch a buffer (2x) to ensure we have enough after filtering/sorting
+    fetch_n = min(n * 2, 60)
+    try:
+        results = vs.get(
+            where={rank_field: {"$lte": fetch_n}},
+            include=["documents", "metadatas"],
+        )
+        docs = []
+        for content, meta in zip(
+            results.get("documents", []), results.get("metadatas", [])
+        ):
+            docs.append(Document(page_content=content, metadata=meta))
+
+        docs.sort(key=lambda d: d.metadata.get(rank_field, 9999))
+        return docs[:n]
+    except Exception as e:
+        logger.warning(f"Top-players rank filter failed ({e}), falling back to similarity")
+        return vs.similarity_search(
+            f"top fantasy players first round picks", k=n
+        )
 
 
 def retrieve_by_adp_range(pick_number: int, window: int = 5) -> list[Document]:
