@@ -83,8 +83,49 @@ try:
 except Exception as e:
     print(f"  ERROR loading Chroma: {e}")
 
-# 4. Sample a player document
-section("4. Sample player document — Bijan Robinson")
+# 4. Check if RBs appear in NGS receiving data at all (by name scan)
+section("4. NGS receiving data — do RBs appear at all?")
+if nfl_path.exists():
+    rb_names = ["Christian McCaffrey", "Bijan Robinson", "Saquon Barkley",
+                "Jahmyr Gibbs", "De'Von Achane", "James Cook"]
+    nfl_records = json.load(open(nfl_path))
+    # Build name->record lookup from nfl_data
+    nfl_by_name: dict = {}
+    for r in nfl_records:
+        dn = r.get("player_display_name", "").strip()
+        if dn:
+            nfl_by_name[dn.lower()] = r
+    for name in rb_names:
+        rec = nfl_by_name.get(name.lower())
+        if rec:
+            tgt25 = rec.get("targets_2025", "—")
+            tgt24 = rec.get("targets_2024", "—")
+            rush25 = rec.get("rush_attempts_2025", "—")
+            print(f"  {name}: rush_att_2025={rush25}, targets_2025={tgt25}, targets_2024={tgt24}")
+        else:
+            print(f"  {name}: NOT found in nfl_data.json by display name")
+
+# 5. Check FantasyPros rankings merge for Bijan
+section("5. FantasyPros data — does Bijan appear in rankings/stats?")
+processed_path = ROOT / "data" / "processed" / "player_documents.json"
+if processed_path.exists():
+    docs_all = json.load(open(processed_path))
+    for name in ["Bijan Robinson", "Ja'Marr Chase", "Christian McCaffrey"]:
+        doc = next((d for d in docs_all if d.get("full_name") == name), None)
+        if doc:
+            print(f"  {name}:")
+            print(f"    rank_half_ppr_2026 = {doc.get('rank_half_ppr_2026')}")
+            print(f"    adp_2025           = {doc.get('adp_2025')}")
+            print(f"    fantasy_points_half_ppr_2025 = {doc.get('fantasy_points_half_ppr_2025')}")
+            print(f"    targets_2025       = {doc.get('targets_2025')}")
+            print(f"    rush_attempts_2025 = {doc.get('rush_attempts_2025')}")
+        else:
+            print(f"  {name}: not found in player_documents.json")
+else:
+    print("  player_documents.json not found")
+
+# 6. Sample Chroma document
+section("6. Sample Chroma document — Bijan Robinson")
 try:
     from src.vectorstore.chroma_store import get_vectorstore
     vs = get_vectorstore()
