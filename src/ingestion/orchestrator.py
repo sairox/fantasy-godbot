@@ -39,13 +39,16 @@ def _load_sleeper_players() -> list[dict]:
 def _calculate_injury_risk(games_missed_2024: int, games_missed_2025: int,
                             injury_body_part_2025: str | None) -> str:
     """Scores injury risk as low/medium/high."""
-    total_missed = (games_missed_2024 or 0) + (games_missed_2025 or 0)
-    soft_tissue_2025 = injury_body_part_2025 and any(
+    missed_25 = games_missed_2025 or 0
+    missed_24 = games_missed_2024 or 0
+    total_missed = missed_24 + missed_25
+    soft_tissue_2025 = bool(injury_body_part_2025) and any(
         part in (injury_body_part_2025 or "").lower()
         for part in ["hamstring", "acl", "pcl", "achilles", "knee", "quad"]
     )
 
-    if total_missed >= 9 or soft_tissue_2025:
+    # Missing 5+ games in a single season is immediately high risk
+    if missed_25 >= 5 or total_missed >= 9 or soft_tissue_2025:
         return "high"
     elif total_missed >= 3:
         return "medium"
@@ -78,10 +81,19 @@ def _calculate_bust_signal(ecr_vs_adp: float | None, games_missed_2024: int,
     """True if a player is likely being overdrafted."""
     if ecr_vs_adp is not None and ecr_vs_adp > 3:
         return True
-    total_missed = (games_missed_2024 or 0) + (games_missed_2025 or 0)
+
+    missed_25 = games_missed_2025 or 0
+    missed_24 = games_missed_2024 or 0
+    total_missed = missed_24 + missed_25
+
+    # Missed more than half a season in 2025 alone is a bust signal regardless of 2024
+    if missed_25 >= 9:
+        return True
+    # Combined 2-season missed games threshold
     if total_missed > 8:
         return True
-    if trend == "declining" and (age or 0) > 28:
+    # Declining production AND entering the fragile side of a career
+    if trend == "declining" and (age or 0) >= 29:
         return True
     return False
 
