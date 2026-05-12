@@ -245,25 +245,82 @@ def fetch_games_missed(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     return result
 
 
+def fetch_seasonal_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
+    """
+    Fetches regular-season totals from nfl_data_py for all positions.
+    Provides baseline receiving stats for RBs (NGS receiving excludes them)
+    and rushing stats for QBs/WRs not in NGS rushing.
+    NGS data takes priority when both sources cover the same player+field.
+    """
+    frames = []
+    for yr in years:
+        try:
+            frames.append(nfl.import_seasonal_data([yr], s_type="REG"))
+        except Exception as e:
+            logger.warning(f"Seasonal data not available for {yr}: {e}")
+    if not frames:
+        return {}
+    import pandas as pd
+    df = pd.concat(frames, ignore_index=True)
+
+    result: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        gsis_id = str(row.get("player_id", ""))
+        if not gsis_id:
+            continue
+        season = int(row["season"])
+        suffix = f"_{season}"
+
+        if gsis_id not in result:
+            result[gsis_id] = {"gsis_id": gsis_id}
+
+        result[gsis_id].update({
+            f"rush_attempts{suffix}":  _safe_val(row.get("carries")),
+            f"rush_yards{suffix}":     _safe_val(row.get("rushing_yards")),
+            f"rush_tds{suffix}":       _safe_val(row.get("rushing_tds")),
+            f"targets{suffix}":        _safe_val(row.get("targets")),
+            f"receptions{suffix}":     _safe_val(row.get("receptions")),
+            f"rec_yards{suffix}":      _safe_val(row.get("receiving_yards")),
+            f"rec_tds{suffix}":        _safe_val(row.get("receiving_tds")),
+        })
+
+    logger.info(f"Fetched seasonal stats for {len(result)} players ({years})")
+    return result
+
+
 def build_nfl_data(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     """
-    Fetches and merges all NGS stats and injury data into a single dict
-    keyed by gsis_id. This is what gets merged into player documents.
+    Fetches and merges all NGS stats, seasonal stats, and injury data into
+    a single dict keyed by gsis_id.
+    Merge order: seasonal (baseline) -> NGS rushing -> NGS receiving ->
+    NGS passing -> injuries. Later sources overwrite earlier ones so that
+    higher-quality NGS metrics always win over basic seasonal counts.
     """
     logger.info(f"Building NFL data for years {years}...")
 
-    rushing  = fetch_rushing_stats(years)
+    seasonal  = fetch_seasonal_stats(years)
+    rushing   = fetch_rushing_stats(years)
     receiving = fetch_receiving_stats(years)
-    passing  = fetch_passing_stats(years)
-    injuries = fetch_games_missed(years)
+    passing   = fetch_passing_stats(years)
+    injuries  = fetch_games_missed(years)
 
     merged: dict[str, dict] = {}
 
-    for source in [rushing, receiving, passing, injuries]:
+    for source in [seasonal, rushing, receiving, passing, injuries]:
         for gsis_id, data in source.items():
             if gsis_id not in merged:
                 merged[gsis_id] = {"gsis_id": gsis_id}
-            merged[gsis_id].update({k: v for k, v in data.items() if k != "gsis_id"})
+            for k, v in data.items():
+                if k == "gsis_id":
+                    continue
+                # NGS/injury values are written unconditionally so they win
+                # over seasonal values; seasonal only sets when key is absent
+                if source is seasonal:
+                    if k not in merged[gsis_id] or merged[gsis_id][k] is None:
+                        merged[gsis_id][k] = v
+                else:
+                    if v is not None:
+                        merged[gsis_id][k] = v
 
     logger.info(f"NFL data built for {len(merged)} players")
     return merged

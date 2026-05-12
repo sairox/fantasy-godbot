@@ -436,9 +436,9 @@ def compute_value_signals(player: dict) -> dict:
 def hash_fp_player(player: dict) -> str:
     """Hashes a FantasyPros player record for change detection."""
     watchlist = {
-        "rank_standard_2026": player.get("rank_rank_standard_2026"),
-        "rank_half_ppr_2026": player.get("rank_rank_half_ppr_2026"),
-        "rank_ppr_2026": player.get("rank_rank_ppr_2026"),
+        "rank_standard_2026": player.get("rank_standard_2026"),
+        "rank_half_ppr_2026": player.get("rank_half_ppr_2026"),
+        "rank_ppr_2026": player.get("rank_ppr_2026"),
         "adp_2025": player.get("adp_2025"),
         "finish_rank_half_2025": player.get("finish_rank_half_2025"),
     }

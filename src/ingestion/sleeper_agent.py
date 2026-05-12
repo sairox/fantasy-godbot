@@ -5,7 +5,8 @@ from pathlib import Path
 
 def fetch_players() -> dict:
     url = "https://api.sleeper.app/v1/players/nfl"
-    response = httpx.get(url, timeout=30.0)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; fantasy-godbot/1.0)"}
+    response = httpx.get(url, timeout=30.0, headers=headers)
     response.raise_for_status()
     return response.json()
 

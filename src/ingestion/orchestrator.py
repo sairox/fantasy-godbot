@@ -194,10 +194,10 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "practice_participation": sleeper.get("practice_participation"),
 
         # 2026 draft projections
-        "rank_standard_2026": rk.get("rank_rank_standard_2026"),
-        "rank_half_ppr_2026": rk.get("rank_rank_half_ppr_2026"),
-        "rank_ppr_2026": rk.get("rank_rank_ppr_2026"),
-        "rank_dynasty_2026": rk.get("rank_rank_dynasty_2026"),
+        "rank_standard_2026": rk.get("rank_standard_2026"),
+        "rank_half_ppr_2026": rk.get("rank_half_ppr_2026"),
+        "rank_ppr_2026": rk.get("rank_ppr_2026"),
+        "rank_dynasty_2026": rk.get("rank_dynasty_2026"),
 
         # 2025 ADP & value
         "adp_2025": adp,
@@ -295,14 +295,54 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
     }
 
 
+def _build_stub_players_from_nfl_data(nfl_data: dict[str, dict]) -> list[dict]:
+    """
+    Creates minimal Sleeper-like player stubs from nfl_data when Sleeper is unavailable.
+    Only includes players with meaningful stats (>= 50 carries or >= 30 targets or >= 50 pass attempts).
+    """
+    stubs = []
+    for gsis_id, data in nfl_data.items():
+        name = data.get("player_display_name", "").strip()
+        if not name:
+            continue
+        rush = (data.get("rush_attempts_2025") or 0) + (data.get("rush_attempts_2024") or 0)
+        tgt = (data.get("targets_2025") or 0) + (data.get("targets_2024") or 0)
+        pa = (data.get("pass_attempts_2025") or 0) + (data.get("pass_attempts_2024") or 0)
+        if rush < 50 and tgt < 30 and pa < 50:
+            continue
+        stubs.append({
+            "player_id": gsis_id,
+            "full_name": name,
+            "gsis_id": gsis_id,
+            "position": None,
+            "team": None,
+            "age": None,
+            "years_exp": None,
+            "status": "Active",
+            "depth_chart_order": None,
+            "injury_status": None,
+            "injury_body_part": None,
+            "injury_start_date": None,
+            "practice_participation": None,
+            "search_rank": None,
+        })
+    logger.info(f"Built {len(stubs)} player stubs from nfl_data")
+    return stubs
+
+
 def build_player_documents(league_format: str = "redraft") -> list[dict]:
     """
     Merges Sleeper + FantasyPros + nfl-data-py into rich player documents.
+    Falls back to nfl_data stubs when Sleeper data is unavailable.
     """
     logger.info("Loading Sleeper player data...")
     sleeper_players = _load_sleeper_players()
+    nfl_data = load_nfl_data()
     if not sleeper_players:
-        logger.warning("No Sleeper data found — run sleeper_agent first")
+        logger.warning("No Sleeper data — building stubs from nfl_data")
+        sleeper_players = _build_stub_players_from_nfl_data(nfl_data)
+    if not sleeper_players:
+        logger.warning("No player data available from any source")
         return []
 
     logger.info("Loading FantasyPros rankings...")
@@ -313,8 +353,6 @@ def build_player_documents(league_format: str = "redraft") -> list[dict]:
     stats_list = load_existing_stats()
     fp_stats = {_normalize_name(p.get("name", "")): p for p in stats_list}
 
-    logger.info("Loading NFL data (NGS + injuries)...")
-    nfl_data = load_nfl_data()  # keyed by gsis_id
     name_gsis_lookup = load_name_gsis_lookup()
 
     direct = sum(1 for p in sleeper_players if p.get("gsis_id") in nfl_data)
@@ -378,17 +416,25 @@ def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
     # Step 1: Sleeper
     logger.info("Fetching fresh Sleeper data...")
     old_sleeper = _load_sleeper_players()
-    raw_players = fetch_players()
-    new_sleeper = filter_players(raw_players, league_format)
-    changed_sleeper = find_changed_players(old_sleeper, new_sleeper) if not force else new_sleeper
-    logger.info(f"Sleeper: {len(new_sleeper)} players, {len(changed_sleeper)} changed")
-    save_raw_data(new_sleeper)
+    try:
+        raw_players = fetch_players()
+        new_sleeper = filter_players(raw_players, league_format)
+        changed_sleeper = find_changed_players(old_sleeper, new_sleeper) if not force else new_sleeper
+        logger.info(f"Sleeper: {len(new_sleeper)} players, {len(changed_sleeper)} changed")
+        save_raw_data(new_sleeper)
+    except Exception as e:
+        logger.warning(f"Sleeper fetch failed ({e}) — using cached data ({len(old_sleeper)} players)")
+        new_sleeper = old_sleeper
+        changed_sleeper = old_sleeper if force else []
 
     # Step 2: FantasyPros rankings
     logger.info("Fetching fresh FantasyPros rankings...")
     try:
         new_rankings = fetch_rankings()
-        save_rankings(new_rankings)
+        if new_rankings:
+            save_rankings(new_rankings)
+        else:
+            logger.warning("FantasyPros rankings returned empty — keeping cached data")
     except Exception as e:
         logger.error(f"FantasyPros rankings fetch failed: {e} — using cached data")
 
@@ -402,7 +448,10 @@ def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
                 new_stats[norm_name].update(adp)
             else:
                 new_stats[norm_name] = adp
-        save_stats(new_stats)
+        if new_stats:
+            save_stats(new_stats)
+        else:
+            logger.warning("FantasyPros stats returned empty — keeping cached data")
     except Exception as e:
         logger.error(f"FantasyPros stats fetch failed: {e} — using cached data")
 

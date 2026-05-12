@@ -3,7 +3,7 @@ from pathlib import Path
 
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_core.embeddings import Embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +14,26 @@ _embeddings = None
 _vectorstore = None
 
 
-def _get_embeddings() -> HuggingFaceEmbeddings:
-    """Returns cached HuggingFace embeddings (all-MiniLM-L6-v2)."""
+class _ChromaONNXEmbeddings(Embeddings):
+    """Wraps Chroma's bundled ONNX all-MiniLM-L6-v2 as a LangChain Embeddings."""
+
+    def __init__(self):
+        from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+        self._ef = DefaultEmbeddingFunction()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [[float(x) for x in vec] for vec in self._ef(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        return [float(x) for x in self._ef([text])[0]]
+
+
+def _get_embeddings() -> Embeddings:
+    """Returns cached embeddings instance (all-MiniLM-L6-v2 via Chroma ONNX)."""
     global _embeddings
     if _embeddings is None:
-        logger.info("Loading HuggingFace embeddings model (all-MiniLM-L6-v2)...")
-        _embeddings = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        logger.info("Loading embeddings model (all-MiniLM-L6-v2 ONNX)...")
+        _embeddings = _ChromaONNXEmbeddings()
     return _embeddings
 
 
@@ -37,16 +47,23 @@ def _fmt(val, decimals: int = 1, suffix: str = "") -> str:
         return str(val)
 
 
+def _v(player: dict, key: str, default: str = "N/A") -> str:
+    """Returns the player field as a string, or default if None/missing."""
+    val = player.get(key)
+    return str(val) if val is not None else default
+
+
 def _player_to_text(player: dict) -> str:
     """
     Converts a merged player document to rich natural-language text for embedding.
     Semantic search works far better on prose than raw JSON.
     """
     name = player.get("full_name", "Unknown")
-    pos = player.get("position", "")
-    team = player.get("team", "N/A")
-    age = player.get("age", "?")
-    exp = player.get("years_exp", "?")
+    pos = player.get("position") or ""
+    pos_str = pos
+    team = player.get("team") or "N/A"
+    age = player.get("age") or "?"
+    exp = player.get("years_exp") or "?"
 
     # rankings
     rk_std = player.get("rank_standard_2026") or "unranked"
@@ -114,7 +131,7 @@ def _player_to_text(player: dict) -> str:
 
     trend_detail = ""
     if fin_24 != "N/A" and fin_25 != "N/A":
-        trend_detail = f" ({pos}{fin_24} in 2024 → {pos}{fin_25} in 2025)"
+        trend_detail = f" ({pos_str}{fin_24} in 2024 → {pos_str}{fin_25} in 2025)"
 
     # depth / status
     depth = player.get("depth_chart_order")
@@ -123,19 +140,19 @@ def _player_to_text(player: dict) -> str:
     practice = player.get("practice_participation") or "N/A"
 
     lines = [
-        f"{name} | {pos} | {team} | Age: {age} | Experience: {exp} years",
+        f"{name} | {pos_str} | {team} | Age: {age} | Experience: {exp} years",
         "",
         "2026 DRAFT RANKINGS:",
-        f"Standard: {pos}{rk_std} | Half PPR: {pos}{rk_half} | PPR: {pos}{rk_ppr} | Dynasty: {pos}{rk_dyn}",
+        f"Standard: {pos_str}{rk_std} | Half PPR: {pos_str}{rk_half} | PPR: {pos_str}{rk_ppr} | Dynasty: {pos_str}{rk_dyn}",
         "",
         "2025 PERFORMANCE:",
         f"Fantasy Points (Half PPR): {fpts_25} | Points Per Game: {ppg_25}",
-        f"Games Played: {gp_25} of 17 (missed {gm_25}) | Finish: {pos}{fin_25}",
+        f"Games Played: {gp_25} of 17 (missed {gm_25}) | Finish: {pos_str}{fin_25}",
         adp_line,
         "",
         "2024 PERFORMANCE:",
         f"Fantasy Points (Half PPR): {fpts_24}",
-        f"Games Played: {gp_24} of 17 (missed {gm_24}) | Finish: {pos}{fin_24}",
+        f"Games Played: {gp_24} of 17 (missed {gm_24}) | Finish: {pos_str}{fin_24}",
         "",
     ]
 
@@ -143,66 +160,81 @@ def _player_to_text(player: dict) -> str:
     # No position gating — CMC has receiving stats, Lamar has rushing stats, etc.
 
     if player.get("rush_attempts_2025") or player.get("rush_attempts_2024"):
-        lines += [
-            "RUSHING STATS (NGS):",
-            f"2025: {player.get('rush_attempts_2025', 'N/A')} att, "
-            f"{player.get('rush_yards_2025', 'N/A')} yds, "
-            f"YPC {_fmt(player.get('ypc_2025'), 2)}, "
-            f"Rush TDs {player.get('rush_tds_2025', 'N/A')}, "
-            f"RYOE {_fmt(player.get('ryoe_2025'), 1)} ({_fmt(player.get('ryoe_per_att_2025'), 3)}/att), "
-            f"Efficiency {_fmt(player.get('rush_efficiency_2025'), 2)}, "
-            f"% vs 8+ defenders {_fmt(player.get('pct_vs_8_defenders_2025'), 1)}",
-            f"2024: {player.get('rush_attempts_2024', 'N/A')} att, "
-            f"{player.get('rush_yards_2024', 'N/A')} yds, "
-            f"YPC {_fmt(player.get('ypc_2024'), 2)}, "
-            f"Rush TDs {player.get('rush_tds_2024', 'N/A')}, "
-            f"RYOE {_fmt(player.get('ryoe_2024'), 1)} ({_fmt(player.get('ryoe_per_att_2024'), 3)}/att)",
-            "",
-        ]
+        rush_lines = ["RUSHING STATS (NGS):"]
+        if player.get("rush_attempts_2025"):
+            rush_lines.append(
+                f"2025: {_v(player,'rush_attempts_2025')} att, "
+                f"{_v(player,'rush_yards_2025')} yds, "
+                f"YPC {_fmt(player.get('ypc_2025'), 2)}, "
+                f"Rush TDs {_v(player,'rush_tds_2025')}, "
+                f"RYOE {_fmt(player.get('ryoe_2025'), 1)} ({_fmt(player.get('ryoe_per_att_2025'), 3)}/att), "
+                f"Efficiency {_fmt(player.get('rush_efficiency_2025'), 2)}, "
+                f"% vs 8+ defenders {_fmt(player.get('pct_vs_8_defenders_2025'), 1)}"
+            )
+        if player.get("rush_attempts_2024"):
+            rush_lines.append(
+                f"2024: {_v(player,'rush_attempts_2024')} att, "
+                f"{_v(player,'rush_yards_2024')} yds, "
+                f"YPC {_fmt(player.get('ypc_2024'), 2)}, "
+                f"Rush TDs {_v(player,'rush_tds_2024')}, "
+                f"RYOE {_fmt(player.get('ryoe_2024'), 1)} ({_fmt(player.get('ryoe_per_att_2024'), 3)}/att)"
+            )
+        rush_lines.append("")
+        lines += rush_lines
 
     if player.get("targets_2025") or player.get("targets_2024"):
-        lines += [
-            "RECEIVING STATS (NGS):",
-            f"2025: {player.get('targets_2025', 'N/A')} tgt, "
-            f"{player.get('receptions_2025', 'N/A')} rec, "
-            f"{player.get('rec_yards_2025', 'N/A')} yds, "
-            f"Rec TDs {player.get('rec_tds_2025', 'N/A')}, "
-            f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
-            f"Avg separation {_fmt(player.get('avg_separation_2025'), 2)} yds, "
-            f"Air yards share {_fmt(player.get('air_yards_share_2025'), 1)}%, "
-            f"YAC above expected {_fmt(player.get('yac_above_expected_2025'), 2)}",
-            f"2024: {player.get('targets_2024', 'N/A')} tgt, "
-            f"{player.get('receptions_2024', 'N/A')} rec, "
-            f"{player.get('rec_yards_2024', 'N/A')} yds, "
-            f"Rec TDs {player.get('rec_tds_2024', 'N/A')}, "
-            f"Catch% {_fmt(player.get('catch_pct_2024'), 1)}, "
-            f"Avg separation {_fmt(player.get('avg_separation_2024'), 2)} yds, "
-            f"Air yards share {_fmt(player.get('air_yards_share_2024'), 1)}%",
-            "",
-        ]
+        rec_lines = ["RECEIVING STATS (NGS):"]
+        if player.get("targets_2025") or player.get("receptions_2025"):
+            rec_lines.append(
+                f"2025: {_v(player,'targets_2025')} tgt, "
+                f"{_v(player,'receptions_2025')} rec, "
+                f"{_v(player,'rec_yards_2025')} yds, "
+                f"Rec TDs {_v(player,'rec_tds_2025')}, "
+                f"Catch% {_fmt(player.get('catch_pct_2025'), 1)}, "
+                f"Avg separation {_fmt(player.get('avg_separation_2025'), 2)} yds, "
+                f"Air yards share {_fmt(player.get('air_yards_share_2025'), 1)}%, "
+                f"YAC above expected {_fmt(player.get('yac_above_expected_2025'), 2)}"
+            )
+        if player.get("targets_2024") or player.get("receptions_2024"):
+            rec_lines.append(
+                f"2024: {_v(player,'targets_2024')} tgt, "
+                f"{_v(player,'receptions_2024')} rec, "
+                f"{_v(player,'rec_yards_2024')} yds, "
+                f"Rec TDs {_v(player,'rec_tds_2024')}, "
+                f"Catch% {_fmt(player.get('catch_pct_2024'), 1)}, "
+                f"Avg separation {_fmt(player.get('avg_separation_2024'), 2)} yds, "
+                f"Air yards share {_fmt(player.get('air_yards_share_2024'), 1)}%"
+            )
+        rec_lines.append("")
+        lines += rec_lines
 
     if player.get("pass_attempts_2025") or player.get("pass_attempts_2024"):
-        lines += [
-            "PASSING STATS (NGS):",
-            f"2025: {player.get('pass_attempts_2025', 'N/A')} att, "
-            f"{player.get('pass_yards_2025', 'N/A')} yds, "
-            f"Pass TDs {player.get('pass_tds_2025', 'N/A')}, "
-            f"INTs {player.get('interceptions_2025', 'N/A')}, "
-            f"Comp% {_fmt(player.get('completion_pct_2025'), 1)} "
-            f"(CPOE {_fmt(player.get('cpoe_2025'), 2)}), "
-            f"Passer rating {_fmt(player.get('passer_rating_2025'), 1)}, "
-            f"Aggressiveness {_fmt(player.get('aggressiveness_2025'), 1)}, "
-            f"Time to throw {_fmt(player.get('time_to_throw_2025'), 2)}s",
-            f"2024: {player.get('pass_attempts_2024', 'N/A')} att, "
-            f"{player.get('pass_yards_2024', 'N/A')} yds, "
-            f"Pass TDs {player.get('pass_tds_2024', 'N/A')}, "
-            f"INTs {player.get('interceptions_2024', 'N/A')}, "
-            f"Comp% {_fmt(player.get('completion_pct_2024'), 1)} "
-            f"(CPOE {_fmt(player.get('cpoe_2024'), 2)}), "
-            f"Passer rating {_fmt(player.get('passer_rating_2024'), 1)}, "
-            f"Aggressiveness {_fmt(player.get('aggressiveness_2024'), 1)}",
-            "",
-        ]
+        pass_lines = ["PASSING STATS (NGS):"]
+        if player.get("pass_attempts_2025"):
+            pass_lines.append(
+                f"2025: {_v(player,'pass_attempts_2025')} att, "
+                f"{_v(player,'pass_yards_2025')} yds, "
+                f"Pass TDs {_v(player,'pass_tds_2025')}, "
+                f"INTs {_v(player,'interceptions_2025')}, "
+                f"Comp% {_fmt(player.get('completion_pct_2025'), 1)} "
+                f"(CPOE {_fmt(player.get('cpoe_2025'), 2)}), "
+                f"Passer rating {_fmt(player.get('passer_rating_2025'), 1)}, "
+                f"Aggressiveness {_fmt(player.get('aggressiveness_2025'), 1)}, "
+                f"Time to throw {_fmt(player.get('time_to_throw_2025'), 2)}s"
+            )
+        if player.get("pass_attempts_2024"):
+            pass_lines.append(
+                f"2024: {_v(player,'pass_attempts_2024')} att, "
+                f"{_v(player,'pass_yards_2024')} yds, "
+                f"Pass TDs {_v(player,'pass_tds_2024')}, "
+                f"INTs {_v(player,'interceptions_2024')}, "
+                f"Comp% {_fmt(player.get('completion_pct_2024'), 1)} "
+                f"(CPOE {_fmt(player.get('cpoe_2024'), 2)}), "
+                f"Passer rating {_fmt(player.get('passer_rating_2024'), 1)}, "
+                f"Aggressiveness {_fmt(player.get('aggressiveness_2024'), 1)}"
+            )
+        pass_lines.append("")
+        lines += pass_lines
 
     lines += [
         "INJURY HISTORY:",
