@@ -20,7 +20,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--format",
         default="redraft",
-        choices=["redraft", "dynasty"],
+        choices=["redraft", "half_ppr", "ppr", "dynasty"],
         help="League format (default: redraft)",
     )
     parser.add_argument(
