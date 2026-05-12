@@ -195,10 +195,11 @@ def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
         "practice_participation": sleeper.get("practice_participation"),
 
         # 2026 draft projections
-        "rank_standard_2026": rk.get("rank_standard_2026"),
-        "rank_half_ppr_2026": rk.get("rank_half_ppr_2026"),
-        "rank_ppr_2026": rk.get("rank_ppr_2026"),
-        "rank_dynasty_2026": rk.get("rank_dynasty_2026"),
+        "rank_standard_2026":      rk.get("rank_standard_2026"),
+        "rank_half_ppr_2026":      rk.get("rank_half_ppr_2026"),
+        "rank_ppr_2026":           rk.get("rank_ppr_2026"),
+        "rank_dynasty_2026":       rk.get("rank_dynasty_2026"),
+        "pos_rank_half_ppr_2026":  rk.get("pos_rank_half_ppr_2026"),
 
         # 2025 ADP & value
         "adp_2025": adp,

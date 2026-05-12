@@ -65,11 +65,23 @@ def _player_to_text(player: dict) -> str:
     age = player.get("age") or "?"
     exp = player.get("years_exp") or "?"
 
-    # rankings
-    rk_std = player.get("rank_standard_2026") or "unranked"
-    rk_half = player.get("rank_half_ppr_2026") or "unranked"
-    rk_ppr = player.get("rank_ppr_2026") or "unranked"
-    rk_dyn = player.get("rank_dynasty_2026") or "unranked"
+    # rankings — overall rank and position-specific rank are different
+    overall_half = player.get("rank_half_ppr_2026")
+    pos_rank     = player.get("pos_rank_half_ppr_2026")
+    rk_dyn       = player.get("rank_dynasty_2026") or "unranked"
+
+    # Display: "RB4 (overall #10)" so bot knows both position rank and overall slot
+    if pos_rank and overall_half:
+        rk_half = f"{pos_str}{pos_rank} (overall #{overall_half})"
+    elif pos_rank:
+        rk_half = f"{pos_str}{pos_rank}"
+    elif overall_half:
+        rk_half = f"overall #{overall_half}"
+    else:
+        rk_half = "unranked"
+
+    rk_std = rk_half  # standard ≈ half-PPR for display purposes
+    rk_ppr = rk_half
 
     # 2025 performance
     fpts_25 = player.get("fantasy_points_half_ppr_2025") or "N/A"
@@ -145,7 +157,7 @@ def _player_to_text(player: dict) -> str:
         f"{name} | {pos_str} | {team} | Age: {age} | Experience: {exp} years",
         "",
         "2026 DRAFT RANKINGS:",
-        f"Standard: {pos_str}{rk_std} | Half PPR: {pos_str}{rk_half} | PPR: {pos_str}{rk_ppr} | Dynasty: {pos_str}{rk_dyn}",
+        f"Standard: {rk_std} | Half PPR: {rk_half} | PPR: {rk_ppr} | Dynasty: {pos_str}{rk_dyn}",
         "",
         "2025 PERFORMANCE:",
         f"Fantasy Points (Half PPR): {fpts_25} | Points Per Game: {ppg_25} | "
@@ -271,7 +283,8 @@ def _player_to_document(player: dict) -> Document:
         "rank_standard_2026":   int(player.get("rank_standard_2026") or computed),
         "rank_half_ppr_2026":   int(player.get("rank_half_ppr_2026") or computed),
         "rank_ppr_2026":        int(player.get("rank_ppr_2026") or computed),
-        "rank_dynasty_2026":    int(player.get("rank_dynasty_2026") or 9999),
+        "rank_dynasty_2026":      int(player.get("rank_dynasty_2026") or 9999),
+        "pos_rank_half_ppr_2026": int(player.get("pos_rank_half_ppr_2026") or 999),
         "computed_rank_half_ppr": int(computed),
         "fantasy_points_half_ppr_2025": float(player.get("fantasy_points_half_ppr_2025") or 0),
         "fantasy_points_half_ppr_2024": float(player.get("fantasy_points_half_ppr_2024") or 0),

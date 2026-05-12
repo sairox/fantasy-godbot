@@ -13,6 +13,12 @@ RAW_DATA_PATH = Path(__file__).parent.parent.parent / "data" / "raw"
 # page_type values from load_ff_rankings(type="draft")
 _PAGE_REDRAFT_OVERALL  = "redraft-overall"
 _PAGE_DYNASTY_OVERALL  = "dynasty-overall"
+_POS_PAGES = {
+    "QB": "redraft-qb",
+    "RB": "redraft-rb",
+    "WR": "redraft-wr",
+    "TE": "redraft-te",
+}
 
 
 def _normalize_name(name: str) -> str:
@@ -117,6 +123,18 @@ def fetch_rankings() -> dict:
                 "adp_worst_2025":     None,
                 "adp_std_dev_2025":   None,
             }
+
+    # --- Position-specific pages: extract position rank (RB1, WR3, etc.) ---
+    for pos, page_type in _POS_PAGES.items():
+        pos_page = df[df["page_type"] == page_type].sort_values("ecr")
+        for pos_rank, (_, row) in enumerate(pos_page.iterrows(), start=1):
+            name = str(row.get("player", "") or "").strip()
+            if not name:
+                continue
+            key = _normalize_name(name)
+            if key in merged:
+                merged[key]["pos_rank_half_ppr_2026"] = pos_rank
+        logger.info("Loaded %d %s position ranks", len(pos_page), pos)
 
     logger.info("fetch_rankings: %d total players", len(merged))
     return merged
