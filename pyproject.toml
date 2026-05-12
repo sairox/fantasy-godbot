@@ -3,7 +3,30 @@ name = "fantasy-draft-bot"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "chromadb>=1.5.8",
+    "cloudscraper>=1.2.71",
+    "fastapi>=0.128.8",
     "httpx>=0.28.1",
+    "langchain>=0.3.28",
+    "langchain-anthropic>=0.3.22",
+    "langchain-chroma>=0.2.6",
+    "langchain-huggingface>=0.3.1",
+    "langchain-openai>=0.3.35",
+    "nfl-data-py>=0.3.2",
+    "nflreadpy>=0.1.5",
+    "openai>=2.32.0",
+    "playwright>=1.59.0",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+    "python-dotenv>=1.2.1",
+    "sentence-transformers>=5.1.2",
+    "streamlit>=1.50.0",
+    "uvicorn>=0.39.0",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+testpaths = ["tests"]

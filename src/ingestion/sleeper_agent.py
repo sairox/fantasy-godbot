@@ -5,7 +5,8 @@ from pathlib import Path
 
 def fetch_players() -> dict:
     url = "https://api.sleeper.app/v1/players/nfl"
-    response = httpx.get(url, timeout=30.0)
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; fantasy-godbot/1.0)"}
+    response = httpx.get(url, timeout=30.0, headers=headers)
     response.raise_for_status()
     return response.json()
 
@@ -61,6 +62,7 @@ def filter_players(players: dict, league_format: str = "redraft") -> list:
             "injury_start_date": player.get("injury_start_date"),
             "practice_participation": player.get("practice_participation"),
             "search_rank": player.get("search_rank"),
+            "gsis_id": player.get("gsis_id"),
         })
     
     return filtered
@@ -105,6 +107,16 @@ def save_raw_data(players: list) -> None:
         json.dump(players, f, indent=2)
     
     print(f"Saved {len(players)} players to {file_path}")
+
+def load_existing_players() -> list:
+    """Loads previously saved Sleeper player data."""
+    RAW_DATA_PATH = Path(__file__).parent.parent.parent / "data" / "raw"
+    file_path = RAW_DATA_PATH / "sleeper_players.json"
+    if not file_path.exists():
+        return []
+    with open(file_path) as f:
+        return json.load(f)
+
 
 if __name__ == "__main__":
     print("Fetching players from Sleeper API...")
