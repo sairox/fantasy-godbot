@@ -355,9 +355,9 @@ def build_player_documents(league_format: str = "redraft") -> list[dict]:
     rankings_list = load_existing_rankings()
     fp_rankings = {_normalize_name(p.get("name", "")): p for p in rankings_list}
 
-    logger.info("Loading FantasyPros stats...")
-    stats_list = load_existing_stats()
-    fp_stats = {_normalize_name(p.get("name", "")): p for p in stats_list}
+    # fp_stats intentionally empty — all stats now sourced from nflreadpy.
+    # Loading the old cache would override current nflreadpy values with stale data.
+    fp_stats: dict = {}
 
     name_gsis_lookup = load_name_gsis_lookup()
 
@@ -501,22 +501,12 @@ def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
     except Exception as e:
         logger.error(f"FantasyPros rankings fetch failed: {e} — using cached data")
 
-    # Step 3: FantasyPros stats + ADP
-    logger.info("Fetching fresh FantasyPros stats and ADP...")
-    try:
-        new_stats = fetch_stats()
-        adp_data = fetch_adp()
-        for norm_name, adp in adp_data.items():
-            if norm_name in new_stats:
-                new_stats[norm_name].update(adp)
-            else:
-                new_stats[norm_name] = adp
-        if new_stats:
-            save_stats(new_stats)
-        else:
-            logger.warning("FantasyPros stats returned empty — keeping cached data")
-    except Exception as e:
-        logger.error(f"FantasyPros stats fetch failed: {e} — using cached data")
+    # Step 3: Clear stale FP stats cache — all stats now come from nflreadpy.
+    # Keeping an old fantasypros_stats.json would cause it to override nflreadpy values.
+    stats_cache = RAW_PATH / "fantasypros_stats.json"
+    if stats_cache.exists():
+        stats_cache.write_text("[]")
+        logger.info("Cleared stale fantasypros_stats.json cache")
 
     # Step 4: nfl-data-py (NGS + injuries)
     logger.info("Fetching fresh NFL data (NGS + injuries)...")
