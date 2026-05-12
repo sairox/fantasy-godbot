@@ -54,6 +54,16 @@ def _row_to_dict(row: pd.Series, cols: list[str]) -> dict:
     return {c: _safe_val(row[c]) for c in cols if c in row.index}
 
 
+def _norm_name(name: str) -> str:
+    """Lowercases and strips common name suffixes for matching."""
+    n = name.lower().strip()
+    for suffix in [" jr.", " sr.", " iii", " iv", " ii", " jr", " sr", " v"]:
+        if n.endswith(suffix):
+            n = n[: -len(suffix)]
+            break
+    return n.strip()
+
+
 def _fetch_ngs(stat_type: str, years: list[int]) -> pd.DataFrame:
     """Fetches NGS data for given stat type and filters to full-season rows (week=0)."""
     try:
@@ -83,7 +93,10 @@ def fetch_rushing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
         data = _row_to_dict(row, RUSH_COLS)
 
         if gsis_id not in result:
-            result[gsis_id] = {"gsis_id": gsis_id}
+            result[gsis_id] = {
+                "gsis_id": gsis_id,
+                "player_display_name": str(row.get("player_display_name", "")),
+            }
 
         result[gsis_id].update({
             f"rush_attempts{suffix}":          data.get("rush_attempts"),
@@ -119,7 +132,10 @@ def fetch_receiving_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
         data = _row_to_dict(row, RECV_COLS)
 
         if gsis_id not in result:
-            result[gsis_id] = {"gsis_id": gsis_id}
+            result[gsis_id] = {
+                "gsis_id": gsis_id,
+                "player_display_name": str(row.get("player_display_name", "")),
+            }
 
         result[gsis_id].update({
             f"targets{suffix}":             data.get("targets"),
@@ -156,7 +172,10 @@ def fetch_passing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
         data = _row_to_dict(row, PASS_COLS)
 
         if gsis_id not in result:
-            result[gsis_id] = {"gsis_id": gsis_id}
+            result[gsis_id] = {
+                "gsis_id": gsis_id,
+                "player_display_name": str(row.get("player_display_name", "")),
+            }
 
         result[gsis_id].update({
             f"pass_attempts{suffix}":   data.get("attempts"),
@@ -248,6 +267,36 @@ def build_nfl_data(years: list[int] = [2024, 2025]) -> dict[str, dict]:
 
     logger.info(f"NFL data built for {len(merged)} players")
     return merged
+
+
+def build_name_gsis_lookup(nfl_data: dict[str, dict]) -> dict[str, str]:
+    """
+    Builds a normalized_name -> gsis_id lookup from already-fetched NGS data.
+    Used as fallback for Sleeper players whose gsis_id field is empty.
+    """
+    lookup: dict[str, str] = {}
+    for gsis_id, data in nfl_data.items():
+        name = data.get("player_display_name", "").strip()
+        if name:
+            lookup[_norm_name(name)] = gsis_id
+    logger.info(f"Built name->gsis_id lookup with {len(lookup)} entries")
+    return lookup
+
+
+def save_name_gsis_lookup(lookup: dict[str, str]) -> None:
+    RAW_DATA_PATH.mkdir(parents=True, exist_ok=True)
+    file_path = RAW_DATA_PATH / "name_gsis_lookup.json"
+    with open(file_path, "w") as f:
+        json.dump(lookup, f)
+    logger.info(f"Saved name->gsis_id lookup ({len(lookup)} entries)")
+
+
+def load_name_gsis_lookup() -> dict[str, str]:
+    file_path = RAW_DATA_PATH / "name_gsis_lookup.json"
+    if not file_path.exists():
+        return {}
+    with open(file_path) as f:
+        return json.load(f)
 
 
 def hash_nfl_player(data: dict) -> str:

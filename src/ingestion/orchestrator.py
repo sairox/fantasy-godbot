@@ -24,6 +24,10 @@ from src.ingestion.nfl_data_agent import (
     save_nfl_data,
     load_nfl_data,
     find_changed_nfl_players,
+    build_name_gsis_lookup,
+    save_name_gsis_lookup,
+    load_name_gsis_lookup,
+    _norm_name,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,15 +104,22 @@ def _calculate_bust_signal(ecr_vs_adp: float | None, games_missed_2024: int,
 
 
 def _merge_player(sleeper: dict, fp_rankings: dict, fp_stats: dict,
-                  nfl_data: dict[str, dict]) -> dict:
+                  nfl_data: dict[str, dict],
+                  name_gsis_lookup: dict[str, str] | None = None) -> dict:
     """
     Merges Sleeper + FantasyPros + nfl-data-py into a single rich document.
     nfl_data is the authoritative source for games missed and advanced NGS stats.
-    Keyed by gsis_id for the nfl_data lookup.
+    name_gsis_lookup is used as fallback when Sleeper gsis_id is missing.
     """
     name = sleeper.get("full_name", "")
     norm = _normalize_name(name)
     gsis_id = sleeper.get("gsis_id") or ""
+
+    # Fallback: match by normalized name when Sleeper gsis_id is missing
+    if not gsis_id and name_gsis_lookup:
+        gsis_id = name_gsis_lookup.get(_norm_name(name), "")
+        if gsis_id:
+            logger.debug("gsis_id resolved by name for %s -> %s", name, gsis_id)
 
     rk = fp_rankings.get(norm, {})
     st = fp_stats.get(norm, {})
@@ -304,15 +315,24 @@ def build_player_documents(league_format: str = "redraft") -> list[dict]:
 
     logger.info("Loading NFL data (NGS + injuries)...")
     nfl_data = load_nfl_data()  # keyed by gsis_id
+    name_gsis_lookup = load_name_gsis_lookup()
 
-    ngs_matched = sum(1 for p in sleeper_players if p.get("gsis_id") in nfl_data)
-    logger.info(f"NGS data matched for {ngs_matched} / {len(sleeper_players)} players")
+    direct = sum(1 for p in sleeper_players if p.get("gsis_id") in nfl_data)
+    name_fallback = sum(
+        1 for p in sleeper_players
+        if not p.get("gsis_id")
+        and name_gsis_lookup.get(_norm_name(p.get("full_name", ""))) in nfl_data
+    )
+    logger.info(
+        f"NGS matched: {direct} by gsis_id, {name_fallback} by name fallback "
+        f"/ {len(sleeper_players)} total"
+    )
 
     logger.info(f"Merging {len(sleeper_players)} players...")
     documents = []
     fp_matched = 0
     for player in sleeper_players:
-        doc = _merge_player(player, fp_rankings, fp_stats, nfl_data)
+        doc = _merge_player(player, fp_rankings, fp_stats, nfl_data, name_gsis_lookup)
         doc["league_format"] = league_format
         documents.append(doc)
         norm = _normalize_name(player.get("full_name", ""))
@@ -320,7 +340,7 @@ def build_player_documents(league_format: str = "redraft") -> list[dict]:
             fp_matched += 1
 
     logger.info(f"Built {len(documents)} documents — {fp_matched} with FP data, "
-                f"{ngs_matched} with NGS data")
+                f"{direct + name_fallback} with NGS data")
     return documents
 
 
@@ -395,7 +415,10 @@ def refresh_all(league_format: str = "redraft", force: bool = False) -> None:
             find_changed_nfl_players(list(old_nfl_data.values()), new_nfl_data)
         ) if not force else set(new_nfl_data.keys())
         save_nfl_data(new_nfl_data)
-        logger.info(f"NFL data: {len(new_nfl_data)} players, {len(changed_gsis_ids)} changed")
+        lookup = build_name_gsis_lookup(new_nfl_data)
+        save_name_gsis_lookup(lookup)
+        logger.info(f"NFL data: {len(new_nfl_data)} players, {len(changed_gsis_ids)} changed, "
+                    f"{len(lookup)} name->gsis entries")
     except Exception as e:
         logger.error(f"NFL data fetch failed: {e} — using cached data")
         changed_gsis_ids = set()
