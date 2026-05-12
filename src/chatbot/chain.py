@@ -103,6 +103,11 @@ SYSTEM_PROMPT = (
     "- Be direct and opinionated - users want a clear recommendation, not a hedge\n"
     "- If asked a general question (not about a specific pick), answer conversationally "
     "using all player data in context\n\n"
+    "ADP FORMAT NOTE:\n"
+    "Player documents show 'FP ADP: pick X overall (round Y, pick Z in 12-team)'. "
+    "Always use the stated overall pick number and round — never re-derive or convert them. "
+    "Round 3-5 in a 12-team league = picks 25-60 overall. "
+    "A player with ADP pick 4 overall is a round 1 pick, NOT round 3-5.\n\n"
     "TRADE ANALYSIS FORMAT:\n"
     "When the context includes a TRADE ANALYSIS section, structure your response as:\n\n"
     "**Trade Verdict:** [Accept / Decline / Counter]\n"
@@ -138,6 +143,34 @@ def _parse_ranking_query(question: str) -> int | None:
     for pattern in first_round_triggers:
         if re.search(pattern, q):
             return 12
+    return None
+
+
+def _detect_round_range_query(question: str) -> tuple[int, int] | None:
+    """
+    Detects round-based queries like 'rounds 3-5' or 'round 3 picks'.
+    Returns (low_pick, high_pick) as overall pick numbers in a 12-team league,
+    or None if the question isn't asking about a specific round range.
+    """
+    q = question.lower()
+    # "rounds 3-5", "rounds 3 to 5", "rounds 3 through 5"
+    m = re.search(r"\brounds?\s+(\d+)\s*(?:[-–]|to|through)\s*(\d+)\b", q)
+    if m:
+        r1, r2 = int(m.group(1)), int(m.group(2))
+        low = (min(r1, r2) - 1) * 12 + 1
+        high = max(r1, r2) * 12
+        return low, high
+    # "round 4" (single round)
+    m = re.search(r"\bround\s+(\d+)\b", q)
+    if m and not re.search(r"\bfirst[\s-]round\b|\b1st[\s-]round\b", q):
+        r = int(m.group(1))
+        if r > 1:  # round 1 is handled by _parse_ranking_query
+            return (r - 1) * 12 + 1, r * 12
+    # "picks 25-60" or "pick 25 to 60"
+    m = re.search(r"\bpicks?\s+(\d+)\s*(?:[-–]|to|through)\s*(\d+)\b", q)
+    if m:
+        p1, p2 = int(m.group(1)), int(m.group(2))
+        return min(p1, p2), max(p1, p2)
     return None
 
 
@@ -200,7 +233,7 @@ def _get_llm() -> ChatAnthropic:
     return ChatAnthropic(
         model="claude-sonnet-4-5",
         anthropic_api_key=api_key,
-        max_tokens=1024,
+        max_tokens=2048,
     )
 
 
@@ -248,10 +281,18 @@ def create_chat_chain(league_format: str = "redraft"):
 
         top_n = _parse_ranking_query(question)
         trade_players = _detect_trade_query(question)
+        round_range = _detect_round_range_query(question)
 
         if top_n:
             docs = retrieve_top_players(top_n, league_format)
             pinned = ""
+        elif round_range:
+            low, high = round_range
+            center = (low + high) // 2
+            window = (high - low) // 2 + 3
+            docs = retrieve_by_adp_range(center, window=window)
+            pinned = f"=== ROUND RANGE QUERY: picks {low}–{high} (overall) ===\n"
+            logger.info("Round range query: picks %d-%d (%d docs)", low, high, len(docs))
         elif trade_players:
             player_a, player_b = trade_players
             doc_a = retrieve_player(player_a)

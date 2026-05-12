@@ -78,24 +78,26 @@ def _player_to_text(player: dict) -> str:
     gm_25 = player.get("games_missed_2025") or 0
     fin_25 = player.get("finish_rank_half_ppr_2025") or "N/A"
 
-    # ADP
-    adp = player.get("adp_2025") or "N/A"
+    # ADP — ECR is an OVERALL pick number (e.g. 3.77 = pick 4, round 1 in 12-team)
+    adp_raw = player.get("adp_2025")
     ecr_vs_adp = player.get("ecr_vs_adp_2025")
-    val_vs_adp = player.get("value_vs_adp_2025")
 
-    adp_line = f"Drafted at ADP {adp}"
-    if ecr_vs_adp is not None:
-        if ecr_vs_adp < -3:
-            adp_line += f" — experts ranked {abs(ecr_vs_adp):.1f} spots higher (undervalued)"
-        elif ecr_vs_adp > 3:
-            adp_line += f" — experts ranked {ecr_vs_adp:.1f} spots lower (overvalued)"
-        else:
-            adp_line += " — close to expert consensus"
-    if val_vs_adp is not None:
-        if val_vs_adp < 0:
-            adp_line += f". Outperformed ADP by {abs(val_vs_adp):.0f} spots."
-        elif val_vs_adp > 0:
-            adp_line += f". Underperformed ADP by {val_vs_adp:.0f} spots."
+    if adp_raw and adp_raw < 990:
+        overall_pick = int(round(adp_raw))
+        team_size = 12
+        draft_round = (overall_pick - 1) // team_size + 1
+        pick_in_round = (overall_pick - 1) % team_size + 1
+        adp_line = (
+            f"FP ADP: pick {overall_pick} overall "
+            f"(round {draft_round}, pick {pick_in_round} in 12-team) | ECR {adp_raw:.2f}"
+        )
+        if ecr_vs_adp is not None:
+            if ecr_vs_adp < -3:
+                adp_line += f" — undervalued by {abs(ecr_vs_adp):.1f} spots vs ADP"
+            elif ecr_vs_adp > 3:
+                adp_line += f" — overvalued by {ecr_vs_adp:.1f} spots vs ADP"
+    else:
+        adp_line = "FP ADP: unranked"
 
     # 2024 performance
     fpts_24 = player.get("fantasy_points_half_ppr_2024") or "N/A"
