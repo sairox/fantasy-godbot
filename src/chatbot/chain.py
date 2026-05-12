@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from collections import deque
 from dotenv import load_dotenv
 
@@ -13,25 +14,103 @@ from src.retrieval.retriever import (
     get_retriever, retrieve_player, retrieve_by_adp_range, retrieve_top_players,
 )
 
-import re
-
 load_dotenv()
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Nickname / alias map — detects player references in free-text questions
+# ---------------------------------------------------------------------------
+
+_NICKNAMES: dict[str, str] = {
+    # RBs
+    "cmc": "Christian McCaffrey",
+    "mccaffrey": "Christian McCaffrey",
+    "bijan": "Bijan Robinson",
+    "gibbs": "Jahmyr Gibbs",
+    "achane": "De'Von Achane",
+    "barkley": "Saquon Barkley",
+    "henry": "Derrick Henry",
+    "breece": "Breece Hall",
+    "taylor": "Jonathan Taylor",
+    "kyren": "Kyren Williams",
+    "pollard": "Tony Pollard",
+    "mixon": "Joe Mixon",
+    "stevenson": "Rhamondre Stevenson",
+    "swift": "D'Andre Swift",
+    # WRs
+    "jefferson": "Justin Jefferson",
+    "lamb": "CeeDee Lamb",
+    "ceedee": "CeeDee Lamb",
+    "chase": "Ja'Marr Chase",
+    "jamarr": "Ja'Marr Chase",
+    "hill": "Tyreek Hill",
+    "tyreek": "Tyreek Hill",
+    "nabers": "Malik Nabers",
+    "marvin": "Marvin Harrison",
+    "mhj": "Marvin Harrison",
+    "puka": "Puka Nacua",
+    "nacua": "Puka Nacua",
+    "amon-ra": "Amon-Ra St. Brown",
+    "evans": "Mike Evans",
+    "diggs": "Stefon Diggs",
+    "davante": "Davante Adams",
+    "deebo": "Deebo Samuel",
+    # TEs
+    "kelce": "Travis Kelce",
+    "bowers": "Brock Bowers",
+    "andrews": "Mark Andrews",
+    "laporte": "Sam LaPorta",
+    "hockenson": "T.J. Hockenson",
+    # QBs
+    "mahomes": "Patrick Mahomes",
+    "lamar": "Lamar Jackson",
+    "hurts": "Jalen Hurts",
+    "burrow": "Joe Burrow",
+    "stroud": "C.J. Stroud",
+    "purdy": "Brock Purdy",
+    "love": "Jordan Love",
+    "richardson": "Anthony Richardson",
+    "herbert": "Justin Herbert",
+    "tua": "Tua Tagovailoa",
+    "prescott": "Dak Prescott",
+    "dak": "Dak Prescott",
+}
+
+SYSTEM_PROMPT = (
+    "You are Fantasy GodBot, an expert fantasy football draft assistant. "
+    "You have access to 2026 expert rankings, 2025 season performance data, 2024 season data, "
+    "ADP history, and advanced NGS stats (YPC, RYOE, targets, separation, CPOE, etc.) "
+    "for all fantasy-relevant NFL players.\n\n"
+    "The user is playing {league_format} fantasy football.\n\n"
+    "RESPONSE FORMAT:\n"
+    "When evaluating a draft pick, always structure your response as:\n\n"
+    "**Pick Grade:** [A+/A/A-/B+/B/B-/C+/C/D/F]\n"
+    "**Analysis:** [2-3 sentences backed by specific stats from the context]\n"
+    "**Risk Factors:** [injury history, age, situation concerns - only if relevant]\n"
+    "**Better Alternatives:** [0-3 players with better value near this ADP - only if they genuinely exist]\n"
+    "**Verdict:** [1 clear sentence - draft them or pass]\n\n"
+    "RULES:\n"
+    "- Always cite specific numbers from the context (fantasy points, ADP, finish rank, NGS stats)\n"
+    "- Never make up stats - only use what is in the retrieved context\n"
+    "- When a player's full stats are available (rushing, receiving, passing), use ALL of them\n"
+    "- For RBs, always mention both rushing AND receiving contribution\n"
+    "- For QBs, mention rushing upside if relevant\n"
+    "- For alternatives, only suggest players within 3 picks of the user's current pick\n"
+    "- If a player has no better alternative, say so confidently\n"
+    "- Adjust advice based on league format: {league_format}\n"
+    "  - Redraft: prioritize 2025 performance, injury risk, current ADP\n"
+    "  - Dynasty: also consider age, years experience, long-term trajectory\n"
+    "- Be direct and opinionated - users want a clear recommendation, not a hedge\n"
+    "- If asked a general question (not about a specific pick), answer conversationally "
+    "using all player data in context"
+)
+
 
 def _parse_ranking_query(question: str) -> int | None:
-    """
-    Returns N if the question is asking for a top-N player list, else None.
-    e.g. "top 12 players" → 12, "first round" → 12, "top 5 RBs" → 5
-    """
+    """Returns N if the question asks for a top-N list, else None."""
     q = question.lower()
-    ranking_patterns = [
-        r"\btop[\s-]+(\d+)\b",
-        r"\bbest\s+(\d+)\b",
-        r"\bfirst\s+(\d+)\s+picks?\b",
-        r"\b(\d+)\s+best\b",
-    ]
-    for pattern in ranking_patterns:
+    for pattern in [r"\btop[\s-]+(\d+)\b", r"\bbest\s+(\d+)\b",
+                    r"\bfirst\s+(\d+)\s+picks?\b", r"\b(\d+)\s+best\b"]:
         m = re.search(pattern, q)
         if m:
             return min(int(m.group(1)), 30)
@@ -39,48 +118,28 @@ def _parse_ranking_query(question: str) -> int | None:
     first_round_triggers = [
         r"\bfirst[\s-]round\b", r"\b1st[\s-]round\b", r"\bround\s+1\b",
         r"\bdraft\s+order\b", r"\bdraft\s+board\b",
-        r"\b1\.\d{2}\b",  # 1.01 – 1.12 style pick notation
+        r"\b1\.\d{2}\b",
         r"\bwho\s+(goes|are|will\s+go|would\s+go)\s+(first|top|early)",
         r"\btop\s+(overall|picks?|players?|guys?)\b",
-        r"\bbest\s+(overall|players?|picks?)\s+(to\s+draft|available|this\s+year)?\b",
+        r"\bbest\s+(overall|players?|picks?)\s*(to\s+draft|available|this\s+year)?\b",
     ]
     for pattern in first_round_triggers:
         if re.search(pattern, q):
             return 12
-
     return None
 
-SYSTEM_PROMPT = """You are Fantasy GodBot, an expert fantasy football draft assistant.
-You have access to 2026 expert rankings, 2025 season performance data, 2024 season data,
-ADP history, and injury information for all fantasy-relevant NFL players.
 
-The user is playing {league_format} fantasy football.
-
-RESPONSE FORMAT:
-When evaluating a draft pick, always structure your response as:
-
-**Pick Grade:** [A+/A/A-/B+/B/B-/C+/C/D/F — use your judgment on format]
-**Analysis:** [2-3 sentences backed by specific stats from the context]
-**Risk Factors:** [injury history, age, situation concerns — only if relevant]
-**Better Alternatives:** [0-3 players with better value near this ADP — only if they genuinely exist]
-**Verdict:** [1 clear sentence — draft them or pass]
-
-RULES:
-- Always cite specific numbers from the context (fantasy points, ADP, finish rank)
-- Never make up stats — only use what is in the retrieved context
-- For alternatives, only suggest players within 3 picks of the user's current pick
-- If a player has no better alternative, say so confidently
-- Adjust advice based on league format: {league_format}
-  - Redraft: prioritize 2025 performance, injury risk, current ADP
-  - Dynasty: also consider age, years experience, long-term trajectory
-- Be direct and opinionated — users want a clear recommendation, not a hedge
-- If asked a general question (not about a specific player), answer conversationally
-  using your knowledge of the players in context
-"""
+def _find_player_in_question(question: str) -> str | None:
+    """Detects a player nickname/name in the question and returns their full name."""
+    q = question.lower()
+    for nickname, full_name in _NICKNAMES.items():
+        if re.search(r"\b" + re.escape(nickname) + r"\b", q):
+            return full_name
+    return None
 
 
 def _format_docs(docs) -> str:
-    """Formats retrieved LangChain Documents into a single context string."""
+    """Formats retrieved LangChain Documents into a context string."""
     if not docs:
         return "No player data found in the knowledge base."
     return "\n\n---\n\n".join(doc.page_content for doc in docs)
@@ -99,10 +158,7 @@ def _get_llm() -> ChatAnthropic:
 
 
 def create_rag_chain(league_format: str = "redraft"):
-    """
-    Creates the full LCEL RAG chain:
-    user question → retriever → augmented prompt → Claude → response
-    """
+    """LCEL RAG chain: question -> retriever -> Claude -> response."""
     retriever = get_retriever(league_format)
     llm = _get_llm()
 
@@ -121,18 +177,17 @@ def create_rag_chain(league_format: str = "redraft"):
         | llm
         | StrOutputParser()
     )
-
     return chain
 
 
 def create_chat_chain(league_format: str = "redraft"):
     """
-    Wraps the RAG chain with a sliding window of the last 10 exchanges.
-    Returns a callable that accepts a question string and returns a response string.
+    Stateful chat chain with sliding-window history.
+    Routes queries to rank-based or player-pinned retrieval as appropriate.
+    Returns a callable: (question: str) -> str.
     """
     retriever = get_retriever(league_format)
     llm = _get_llm()
-    # Sliding window: each entry is (HumanMessage, AIMessage)
     history_window: deque = deque(maxlen=10)
 
     prompt = ChatPromptTemplate.from_messages([
@@ -142,16 +197,24 @@ def create_chat_chain(league_format: str = "redraft"):
     ])
 
     def run(question: str) -> str:
-        # Flatten window into a list of messages
         flat_history = [msg for pair in history_window for msg in pair]
 
         top_n = _parse_ranking_query(question)
         if top_n:
             docs = retrieve_top_players(top_n, league_format)
+            pinned = ""
         else:
             docs = retriever.invoke(question)
-        context = _format_docs(docs)
+            pinned = ""
+            # When the question names a specific player, pin their full doc first
+            player_name = _find_player_in_question(question)
+            if player_name:
+                player_doc = retrieve_player(player_name)
+                if not player_doc.startswith("No information found"):
+                    pinned = f"=== {player_name.upper()} (DIRECT LOOKUP) ===\n{player_doc}\n\n"
+                    logger.info("Pinned player doc for: %s", player_name)
 
+        context = pinned + _format_docs(docs)
         chain = prompt | llm | StrOutputParser()
         response = chain.invoke({
             "question": question,
@@ -159,7 +222,6 @@ def create_chat_chain(league_format: str = "redraft"):
             "history": flat_history,
             "league_format": league_format,
         })
-
         history_window.append((HumanMessage(content=question), AIMessage(content=response)))
         return response
 
@@ -168,22 +230,14 @@ def create_chat_chain(league_format: str = "redraft"):
 
 def get_pick_evaluation(player_name: str, pick_number: int,
                         league_format: str = "redraft") -> str:
-    """
-    Specialized function for draft pick evaluation.
-    Retrieves the specific player + alternatives near the pick's ADP range.
-    """
+    """Evaluates a specific draft pick with grade, analysis, and alternatives."""
     llm = _get_llm()
-
-    # Get the specific player's document
     player_context = retrieve_player(player_name)
-
-    # Get alternative players near the pick number
     alternatives = retrieve_by_adp_range(pick_number, window=3)
-    alternatives_text = _format_docs(alternatives)
 
     combined_context = (
         f"=== PLAYER BEING EVALUATED ===\n{player_context}\n\n"
-        f"=== PLAYERS AVAILABLE NEAR PICK {pick_number} ===\n{alternatives_text}"
+        f"=== PLAYERS AVAILABLE NEAR PICK {pick_number} ===\n{_format_docs(alternatives)}"
     )
 
     prompt = ChatPromptTemplate.from_messages([
@@ -193,7 +247,8 @@ def get_pick_evaluation(player_name: str, pick_number: int,
          "They are considering drafting {player_name}.\n\n"
          "Context:\n{context}\n\n"
          "Should they draft {player_name} at pick {pick_number}? "
-         "Provide your pick grade, analysis, risk factors, better alternatives (only if they exist near this ADP), and verdict."),
+         "Provide pick grade, analysis, risk factors, "
+         "better alternatives (only if near this ADP), and verdict."),
     ])
 
     chain = prompt | llm | StrOutputParser()
