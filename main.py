@@ -1,6 +1,9 @@
-def main():
-    print("Hello from fantasy-draft-bot!")
-
+import uvicorn
 
 if __name__ == "__main__":
-    main()
+    uvicorn.run(
+        "src.api.routes:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+    )

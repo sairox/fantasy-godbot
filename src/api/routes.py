@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.vectorstore.chroma_store import get_collection_count
@@ -17,6 +18,13 @@ app = FastAPI(
     title="Fantasy GodBot API",
     description="AI-powered fantasy football draft assistant",
     version="1.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(","),
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
 )
 
 # Per-session chat chains (keyed by session_id)
