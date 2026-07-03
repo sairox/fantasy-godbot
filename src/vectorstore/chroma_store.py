@@ -21,11 +21,15 @@ class _ChromaONNXEmbeddings(Embeddings):
         from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
         self._ef = DefaultEmbeddingFunction()
 
+    @staticmethod
+    def _to_list(vec) -> list[float]:
+        return vec.tolist() if hasattr(vec, "tolist") else [float(x) for x in vec]
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [[float(x) for x in vec] for vec in self._ef(texts)]
+        return [self._to_list(vec) for vec in self._ef(texts)]
 
     def embed_query(self, text: str) -> list[float]:
-        return [float(x) for x in self._ef([text])[0]]
+        return self._to_list(self._ef([text])[0])
 
 
 def _get_embeddings() -> Embeddings:
@@ -355,19 +359,18 @@ def update_players(changed_players: list[dict]) -> None:
     vs = get_vectorstore()
     logger.info(f"Updating {len(changed_players)} players in Chroma...")
 
-    for player in changed_players:
-        player_id = str(player.get("player_id", ""))
-        doc_id = f"player_{player_id}"
+    ids = [f"player_{player.get('player_id', '')}" for player in changed_players]
+    lc_docs = [_player_to_document(player) for player in changed_players]
 
-        # Delete old document
-        try:
-            vs.delete(ids=[doc_id])
-        except Exception:
-            pass  # may not exist yet
+    # Batch delete + add — one round trip each instead of two per player
+    try:
+        vs.delete(ids=ids)
+    except Exception:
+        pass  # some may not exist yet
 
-        # Add new document
-        lc_doc = _player_to_document(player)
-        vs.add_documents(documents=[lc_doc], ids=[doc_id])
+    batch_size = 100
+    for i in range(0, len(lc_docs), batch_size):
+        vs.add_documents(documents=lc_docs[i:i + batch_size], ids=ids[i:i + batch_size])
 
     logger.info(f"Updated {len(changed_players)} players successfully")
 
@@ -376,8 +379,8 @@ def get_collection_count() -> int:
     """Returns the number of documents currently in the Chroma collection."""
     try:
         vs = get_vectorstore()
-        result = vs.get()
-        return len(result["ids"])
+        # Native count — avoids fetching every document just to count them
+        return vs._collection.count()
     except Exception as e:
         logger.warning(f"Could not get collection count: {e}")
         return 0

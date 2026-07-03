@@ -76,6 +76,16 @@ _NICKNAMES: dict[str, str] = {
     "dak": "Dak Prescott",
 }
 
+# Single compiled alternation — one scan per question instead of ~50 regex compiles
+_NICKNAME_RE = re.compile(
+    r"\b(" + "|".join(re.escape(n) for n in _NICKNAMES) + r")\b"
+)
+
+_TRADE_PATTERNS_RE = re.compile(
+    r"\btrade\b.+\bfor\b|\bworth\b|\bshould i (?:trade|swap|give up)\b"
+    r"|\bvs\.?\b|\bcompare\b|\bover\b.+\bor\b"
+)
+
 SYSTEM_PROMPT = (
     "You are Fantasy GodBot, an expert fantasy football draft assistant. "
     "You have access to 2026 expert rankings, 2025 season performance data, 2024 season data, "
@@ -176,11 +186,8 @@ def _detect_round_range_query(question: str) -> tuple[int, int] | None:
 
 def _find_player_in_question(question: str) -> str | None:
     """Detects a player nickname/name in the question and returns their full name."""
-    q = question.lower()
-    for nickname, full_name in _NICKNAMES.items():
-        if re.search(r"\b" + re.escape(nickname) + r"\b", q):
-            return full_name
-    return None
+    m = _NICKNAME_RE.search(question.lower())
+    return _NICKNAMES[m.group(1)] if m else None
 
 
 def _detect_trade_query(question: str) -> tuple[str, str] | None:
@@ -188,29 +195,15 @@ def _detect_trade_query(question: str) -> tuple[str, str] | None:
     Detects trade comparison queries like 'trade CMC for Bijan' or
     'is Kelce worth Lamb'. Returns (player_a, player_b) full names or None.
     """
-    trade_patterns = [
-        r"\btrade\b.+\bfor\b",
-        r"\bworth\b",
-        r"\bshould i (trade|swap|give up)\b",
-        r"\bvs\.?\b",
-        r"\bcompare\b",
-        r"\bover\b.+\bor\b",
-    ]
     q = question.lower()
-    if not any(re.search(p, q) for p in trade_patterns):
+    if not _TRADE_PATTERNS_RE.search(q):
         return None
 
-    # Collect all nickname matches in order of position
-    found: list[tuple[int, str]] = []
-    for nickname, full_name in _NICKNAMES.items():
-        m = re.search(r"\b" + re.escape(nickname) + r"\b", q)
-        if m:
-            found.append((m.start(), full_name))
-
-    # Deduplicate (same full name from multiple nicknames)
+    # Collect nickname matches in order of position, deduped by full name
     seen: set[str] = set()
     ordered: list[str] = []
-    for _, name in sorted(found):
+    for m in _NICKNAME_RE.finditer(q):
+        name = _NICKNAMES[m.group(1)]
         if name not in seen:
             seen.add(name)
             ordered.append(name)
@@ -225,16 +218,22 @@ def _format_docs(docs) -> str:
     return "\n\n---\n\n".join(doc.page_content for doc in docs)
 
 
+_llm: ChatAnthropic | None = None
+
+
 def _get_llm() -> ChatAnthropic:
-    """Returns the Claude model instance."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key or api_key == "your_key_here":
-        raise ValueError("ANTHROPIC_API_KEY is not set in .env")
-    return ChatAnthropic(
-        model="claude-sonnet-4-5",
-        anthropic_api_key=api_key,
-        max_tokens=2048,
-    )
+    """Returns the cached Claude model instance (the client is stateless)."""
+    global _llm
+    if _llm is None:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key or api_key == "your_key_here":
+            raise ValueError("ANTHROPIC_API_KEY is not set in .env")
+        _llm = ChatAnthropic(
+            model="claude-sonnet-4-5",
+            anthropic_api_key=api_key,
+            max_tokens=2048,
+        )
+    return _llm
 
 
 def create_rag_chain(league_format: str = "redraft"):
@@ -275,6 +274,7 @@ def create_chat_chain(league_format: str = "redraft"):
         MessagesPlaceholder(variable_name="history"),
         ("human", "{question}"),
     ])
+    chain = prompt | llm | StrOutputParser()
 
     def run(question: str) -> str:
         flat_history = [msg for pair in history_window for msg in pair]
@@ -317,7 +317,6 @@ def create_chat_chain(league_format: str = "redraft"):
                     logger.info("Pinned player doc for: %s", player_name)
 
         context = pinned + _format_docs(docs)
-        chain = prompt | llm | StrOutputParser()
         response = chain.invoke({
             "question": question,
             "context": context,
