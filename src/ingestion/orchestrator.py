@@ -7,16 +7,11 @@ from src.ingestion.sleeper_agent import (
     filter_players,
     find_changed_players,
     save_raw_data,
-    load_existing_players,
 )
 from src.ingestion.fantasypros_agent import (
     fetch_rankings,
-    fetch_stats,
-    fetch_adp,
     save_rankings,
-    save_stats,
     load_existing_rankings,
-    load_existing_stats,
     _normalize_name,
 )
 from src.ingestion.nfl_data_agent import (
@@ -28,7 +23,6 @@ from src.ingestion.nfl_data_agent import (
     save_name_gsis_lookup,
     load_name_gsis_lookup,
     _norm_name,
-    fetch_rosters,
 )
 
 logger = logging.getLogger(__name__)

@@ -35,7 +35,6 @@ def retrieve_player(player_name: str) -> str:
     # Check if first result is a strong match
     top = results[0]
     name_lower = player_name.lower().replace(".", "").strip()
-    doc_name = top.metadata.get("name", "").lower()
 
     # Try to find the best name match in results
     for doc in results:
@@ -115,10 +114,14 @@ def retrieve_by_adp_range(pick_number: int, window: int = 5) -> list[Document]:
             },
             include=["documents", "metadatas"],
         )
-        docs = []
-        for content, meta in zip(results.get("documents", []), results.get("metadatas", [])):
-            docs.append(Document(page_content=content, metadata=meta))
-        return docs
+        docs = [
+            Document(page_content=content, metadata=meta)
+            for content, meta in zip(results.get("documents", []), results.get("metadatas", []))
+        ]
+        # Draft order reads better for the LLM than Chroma's arbitrary order;
+        # cap so a wide round-range query can't flood the context window
+        docs.sort(key=lambda d: d.metadata.get("adp_2025", 999.0))
+        return docs[:40]
     except Exception as e:
         logger.warning(f"ADP range filter failed ({e}), falling back to similarity search")
         query = f"players available around pick {pick_number} ADP {pick_number}"

@@ -72,7 +72,7 @@ def fetch_rosters(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     df = df.drop_duplicates(subset=["gsis_id"], keep="last")
 
     result: dict[str, dict] = {}
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         gsis_id = str(row.get("gsis_id", "")).strip()
         if not gsis_id:
             continue
@@ -111,7 +111,7 @@ def fetch_seasonal_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
         return {}
 
     result: dict[str, dict] = {}
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         gsis_id = str(row.get("player_id", "")).strip()
         if not gsis_id:
             continue
@@ -165,7 +165,7 @@ def fetch_rushing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     df = df[df["week"] == 0].copy()  # week=0 = full-season aggregate
 
     result: dict[str, dict] = {}
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         gsis_id = str(row.get("player_gsis_id", "")).strip()
         if not gsis_id:
             continue
@@ -214,7 +214,7 @@ def fetch_receiving_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     df = df[df["week"] == 0].copy()
 
     result: dict[str, dict] = {}
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         gsis_id = str(row.get("player_gsis_id", "")).strip()
         if not gsis_id:
             continue
@@ -263,7 +263,7 @@ def fetch_passing_stats(years: list[int] = [2024, 2025]) -> dict[str, dict]:
     df = df[df["week"] == 0].copy()
 
     result: dict[str, dict] = {}
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
         gsis_id = str(row.get("player_gsis_id", "")).strip()
         if not gsis_id:
             continue

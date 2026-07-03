@@ -1,7 +1,6 @@
 import json
 import hashlib
 import logging
-import re
 from pathlib import Path
 
 import nflreadpy as nflr
@@ -69,7 +68,7 @@ def fetch_rankings() -> dict:
     logger.info("Loaded %d redraft-overall rankings (scraped %s)",
                 len(redraft), redraft["scrape_date"].iloc[0] if len(redraft) else "?")
 
-    for _, row in redraft.iterrows():
+    for row in redraft.to_dict("records"):
         name = str(row.get("player", "") or "").strip()
         if not name:
             continue
@@ -99,7 +98,7 @@ def fetch_rankings() -> dict:
     dynasty = dynasty.sort_values("ecr")
     logger.info("Loaded %d dynasty-overall rankings", len(dynasty))
 
-    for _, row in dynasty.iterrows():
+    for row in dynasty.to_dict("records"):
         name = str(row.get("player", "") or "").strip()
         if not name:
             continue
@@ -127,7 +126,7 @@ def fetch_rankings() -> dict:
     # --- Position-specific pages: extract position rank (RB1, WR3, etc.) ---
     for pos, page_type in _POS_PAGES.items():
         pos_page = df[df["page_type"] == page_type].sort_values("ecr")
-        for pos_rank, (_, row) in enumerate(pos_page.iterrows(), start=1):
+        for pos_rank, row in enumerate(pos_page.to_dict("records"), start=1):
             name = str(row.get("player", "") or "").strip()
             if not name:
                 continue

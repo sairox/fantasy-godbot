@@ -1,9 +1,11 @@
 import logging
 import os
+from collections import OrderedDict
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from src.vectorstore.chroma_store import get_collection_count
@@ -19,8 +21,16 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Per-session chat chains (keyed by session_id)
-_chat_chains: dict = {}
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173").split(","),
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+# Per-session chat chains (keyed by session_id), LRU-evicted so memory is bounded
+_chat_chains: OrderedDict = OrderedDict()
+_MAX_SESSIONS = int(os.getenv("MAX_CHAT_SESSIONS", "200"))
 
 
 # --- Request / Response models ---
@@ -84,7 +94,11 @@ def chat(request: ChatRequest):
     if session_key not in _chat_chains:
         logger.info(f"Creating new chat chain for session {session_key}")
         _chat_chains[session_key] = create_chat_chain(request.league_format)
+        while len(_chat_chains) > _MAX_SESSIONS:
+            evicted, _ = _chat_chains.popitem(last=False)
+            logger.info(f"Evicted least-recently-used chat session {evicted}")
 
+    _chat_chains.move_to_end(session_key)
     chain_fn = _chat_chains[session_key]
 
     try:
